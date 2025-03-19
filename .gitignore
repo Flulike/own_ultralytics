@@ -175,7 +175,11 @@ pnnx*
 calibration_*.npy
 
 # results
-results
+results/
 
-#logs
-logs
+# dataset
+data/
+
+# logs
+logs/
+*.txt
