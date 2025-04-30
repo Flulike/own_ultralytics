@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from ultralytics.utils import LOGGER
-from ultralytics.utils.metrics import batch_probiou
+# from ultralytics.utils.metrics import batch_probiou
 
 
 class Profile(contextlib.ContextDecorator):
