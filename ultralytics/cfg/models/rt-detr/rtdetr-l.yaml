@@ -42,11 +42,13 @@ head:
   - [[-2, -1], 1, Concat, [1]] # cat backbone P4
   - [-1, 3, RepC3, [256]] # X3 (21), fpn_blocks.1
 
-  - [-1, 1, Conv, [256, 3, 2]] # 22, downsample_convs.0
+  # - [-1, 1, Conv, [256, 3, 2]] # 22, downsample_convs.0
+  - [-1, 1, WaveletDownsampleWrapper, [256]]
   - [[-1, 17], 1, Concat, [1]] # cat Y4
   - [-1, 3, RepC3, [256]] # F4 (24), pan_blocks.0
 
-  - [-1, 1, Conv, [256, 3, 2]] # 25, downsample_convs.1
+  # - [-1, 1, Conv, [256, 3, 2]] # 25, downsample_convs.1
+  - [-1, 1, WaveletDownsampleWrapper, [256]]
   - [[-1, 12], 1, Concat, [1]] # cat Y5
   - [-1, 3, RepC3, [256]] # F5 (27), pan_blocks.1
 
