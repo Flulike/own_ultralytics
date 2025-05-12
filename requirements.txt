@@ -10,4 +10,5 @@ timm
 scipy
 thop 
 einops
+pandas
 ultralytics-thop
