@@ -1,13 +1,13 @@
 from ultralytics import YOLO
 
-device = [3]
+device = [1]
 
 # Load a model
-model = YOLO("yolo11l.yaml")  # build a new model from YAML
-model = YOLO("yolo11l.pt")  # load a pretrained model (recommended for training)
-model = YOLO("yolo11l.yaml").load("yolo11l.pt")  # build from YAML and transfer weights
+model = YOLO("yolo11x.yaml")  # build a new model from YAML
+# model = YOLO("yolo11x.pt")  # load a pretrained model (recommended for training)
+# model = YOLO("yolo11x.yaml").load("yolo11x.pt")  # build from YAML and transfer weights
 
-project = "/home/guo/own_ultralytics/results/ultralytics/yolov11/l"
+project = "results/ultralytics/yolov11/x"
 
 # Train the model
-results = model.train(data="/home/guo/own_ultralytics/ultralytics/cfg/datasets/VisDrone.yaml", epochs=300, imgsz=640, device=device, project=project, batch=12, optimizer='SGD',  name='yolo11l_visdrone_vml6_')
+results = model.train(data="ultralytics/cfg/datasets/Fisheye.yaml", epochs=300, imgsz=640, device=device, project=project, batch=12, optimizer='SGD',  name='fisheye_vml6_', pretrained=False)
