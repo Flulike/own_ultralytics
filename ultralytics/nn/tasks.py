@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 
+from ultralytics.nn.modules import *
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -987,6 +988,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SCDown,
             C2fCIB,
             A2C2f,
+            WaveletDownsampleWrapper,
+            CED,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

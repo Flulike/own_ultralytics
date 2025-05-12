@@ -17,6 +17,13 @@ Example:
     ```
 """
 
+from .own_block import (
+    DepthwiseSeparableConv,
+    WaveletDownsampleWrapper,
+    CED,
+    HaarWavelet,
+    WFD,
+)
 from .block import (
     C1,
     C2,
@@ -162,4 +169,7 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "CED",
+    "DepthwiseSeparableConv",
+    "WaveletDownsampleWrapper",
 )
