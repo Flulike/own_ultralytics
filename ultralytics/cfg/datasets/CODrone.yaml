@@ -1,0 +1,18 @@
+path: /mnt/vmlqnap01/datasets/CODrone
+train: train/images
+val: test/images
+# test: test/images
+
+names:
+  0: car
+  1: truck
+  2: traffic-sign
+  3: people
+  4: motor
+  5: bicycle
+  6: traffic-light
+  7: tricycle
+  8: bridge
+  9: bus
+  10: boat
+  11: ship

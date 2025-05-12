@@ -1,0 +1,12 @@
+path: /mnt/vmlqnap01/datasets/Fisheye
+train: train/images
+val: test/images
+# test: test/images
+
+
+names:
+  0: Bus
+  1: Bike
+  2: Car
+  3: Pedestrian
+  4: Truck
