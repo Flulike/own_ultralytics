@@ -457,24 +457,18 @@ def convert_dota_to_yolo_obb(dota_root_path: str):
 
     # Class names to indices mapping
     class_mapping = {
-        "plane": 0,
-        "ship": 1,
-        "storage-tank": 2,
-        "baseball-diamond": 3,
-        "tennis-court": 4,
-        "basketball-court": 5,
-        "ground-track-field": 6,
-        "harbor": 7,
+        "car": 0,
+        "truck": 1,
+        "traffic-sign": 2,
+        "people": 3,
+        "motor": 4,
+        "bicycle": 5,
+        "traffic-light": 6,
+        "tricycle": 7,
         "bridge": 8,
-        "large-vehicle": 9,
-        "small-vehicle": 10,
-        "helicopter": 11,
-        "roundabout": 12,
-        "soccer-ball-field": 13,
-        "swimming-pool": 14,
-        "container-crane": 15,
-        "airport": 16,
-        "helipad": 17,
+        "bus": 9,
+        "boat": 10,
+        "ship": 11,
     }
 
     def convert_label(image_name, image_width, image_height, orig_label_dir, save_dir):
@@ -489,6 +483,9 @@ def convert_dota_to_yolo_obb(dota_root_path: str):
                 if len(parts) < 9:
                     continue
                 class_name = parts[8]
+                # 如果类别名不在 class_mapping 中，则忽略该标注
+                if class_name not in class_mapping:
+                    continue
                 class_idx = class_mapping[class_name]
                 coords = [float(p) for p in parts[:8]]
                 normalized_coords = [
@@ -497,16 +494,16 @@ def convert_dota_to_yolo_obb(dota_root_path: str):
                 formatted_coords = [f"{coord:.6g}" for coord in normalized_coords]
                 g.write(f"{class_idx} {' '.join(formatted_coords)}\n")
 
-    for phase in ["train", "val"]:
-        image_dir = dota_root_path / "images" / phase
-        orig_label_dir = dota_root_path / "labels" / f"{phase}_original"
-        save_dir = dota_root_path / "labels" / phase
+    for phase in ["train", "val", "test"]:
+        image_dir = dota_root_path / phase / "images" 
+        orig_label_dir = dota_root_path / phase / "annfile" 
+        save_dir = dota_root_path / phase / "labels" 
 
         save_dir.mkdir(parents=True, exist_ok=True)
 
         image_paths = list(image_dir.iterdir())
         for image_path in TQDM(image_paths, desc=f"Processing {phase} images"):
-            if image_path.suffix != ".png":
+            if image_path.suffix != ".jpg":
                 continue
             image_name_without_ext = image_path.stem
             img = cv2.imread(str(image_path))
