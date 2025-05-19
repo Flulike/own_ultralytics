@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from ultralytics.utils import LOGGER, SimpleClass, TryExcept, plt_settings, ops
+from ultralytics.utils import LOGGER, SimpleClass, TryExcept, plt_settings
 
 OKS_SIGMA = np.array([.26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87, .87, .89, .89]) / 10.0
 
@@ -181,6 +181,7 @@ def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=Fa
     return iou  # IoU
 
 def get_inner_iou(box1, box2, xywh=True, eps=1e-7, ratio=0.7):
+    from ultralytics.utils import ops
     if not xywh:
         box1, box2 = ops.xyxy2xywh(box1), ops.xyxy2xywh(box2)
     (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
