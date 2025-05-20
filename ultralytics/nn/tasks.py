@@ -990,6 +990,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             A2C2f,
             WaveletDownsampleWrapper,
             CED,
+            GGmix,
+            DeformableNeighborhoodAttention
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
