@@ -990,6 +990,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             A2C2f,
             WaveletDownsampleWrapper,
             CED,
+            # GGmix,
+            DeformableNeighborhoodAttention
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1031,8 +1033,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if m is C2fAttn:  # set 1) embed channels and 2) num heads
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
                 args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
-
-            args = [c1, c2, *args[1:]]
+            
+            if m is DeformableNeighborhoodAttention:  # 特殊处理：只缩放 dim，保持 num_heads 不变
+                # 直接构造正确的 args，避免被后续覆盖
+                # args 原来是 [dim, num_heads, kernel_size]，应该变成 [c1, num_heads, kernel_size]
+                args = [c1, args[1], args[2]]  # [实际输入通道数, 保持原始num_heads, 保持原始kernel_size]
+                c2 = c1  # 输出通道数等于输入通道数
+            else:
+                args = [c1, c2, *args[1:]]
             if m in repeat_modules:
                 args.insert(2, n)  # number of repeats
                 n = 1
