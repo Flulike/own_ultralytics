@@ -23,6 +23,7 @@ from .own_block import (
     CED,
     HaarWavelet,
     WFD,
+    DeformableNeighborhoodAttention,
 )
 from .block import (
     C1,
@@ -172,4 +173,5 @@ __all__ = (
     "CED",
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
+    "DeformableNeighborhoodAttention",
 )

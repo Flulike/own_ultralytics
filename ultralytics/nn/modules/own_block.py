@@ -19,7 +19,7 @@ __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "CED",
-    "GGmix",
+    # "GGmix",
     "DeformableNeighborhoodAttention",
 )
 
@@ -614,7 +614,7 @@ class DeformableNeighborhoodAttention(nn.Module):
         q_off = einops.rearrange(
             q, 'b (g c) h w -> (b g) c h w', g=self.n_groups, c=self.n_group_channels)
         offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
-
+        
         Hk, Wk = offset.size(2), offset.size(3)
 
         if self.offset_range_factor >= 0 and not self.no_off:
@@ -649,7 +649,8 @@ class DeformableNeighborhoodAttention(nn.Module):
 
         residual_lepe = self.rpe_table(q)
 
-        if self.rpb is not None or not FUSED:
+        # CPU 不支持融合内核，强制使用非融合版本
+        if self.rpb is not None or not FUSED or device.type == 'cpu':
             q = einops.rearrange(q, 'b (g c) h w -> b g h w c',
                                  g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
             k = einops.rearrange(self.proj_k(x_sampled), 'b (g c) h w -> b g h w c',
