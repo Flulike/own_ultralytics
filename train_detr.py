@@ -19,19 +19,19 @@ if __name__ == '__main__':
     # 获取当前脚本所在的目录
     current_dir = Path(__file__).parent
     # 构建相对路径
-    yaml_path = '/home/guo/own_ultralytics/ultralytics/cfg/datasets/_visdrone.yaml'
+    yaml_path = 'ultralytics/cfg/datasets/Fisheye.yaml'
     check_path(yaml_path)
     # model = RTDETR('ultralytics/cfg/models/uavdetr-r50.yaml')
-    model = RTDETR('/home/guo/own_ultralytics/ultralytics/cfg/models/rt-detr/rtdetr-l.yaml')
-    model = RTDETR("rtdetr-l.pt")  # load a pretrained model (recommended for training)
-    model = RTDETR("/home/guo/own_ultralytics/ultralytics/cfg/models/rt-detr/rtdetr-l.yaml").load("rtdetr-l.pt")  # build from YAML and transfer weights
-    device = [2]
+    model = RTDETR('rtdetr-resnet101.yaml')
+    # model = RTDETR("rtdetr-l.pt")  # load a pretrained model (recommended for training)
+    # model = RTDETR("rtdetr-l.yaml").load("rtdetr-l.pt")  # build from YAML and transfer weights
+    device = [3]
     optimizer = 'Adamw'
     model.train(data=str(yaml_path),
                 imgsz=640,
-                epochs=64,
+                epochs=100,
                 device=device,
                 # resume='', # last.pt path
                 project='results/ultralytics/RTDETR',
-                name='rtdetr-l_visdrone_vml6_',
+                name='101_fisheye_vml4_',
                 )
