@@ -143,8 +143,8 @@ def main():
     
     # File paths - modify these according to your setup
     gt_file = "data/Fisheye/test/test.json"  # Ground truth file
-    pred_file = "results/ultralytics/yolov11/x/fisheye_vml3_test/predictions.json"  # Original predictions
-    output_file = "results/ultralytics/yolov11/x/fisheye_vml3_test/predictions_converted.json"  # Converted predictions
+    pred_file = "results/ultralytics/yolov11/x/fisheye_vml3_test3/predictions.json"  # Original predictions
+    output_file = "results/ultralytics/yolov11/x/fisheye_vml3_test3/predictions_converted.json"  # Converted predictions
     
     print("Starting prediction format conversion...")
     

@@ -11,10 +11,10 @@ device = [2]
 
 # Load a model
 model = YOLO("yolo11x-obb.yaml")  # build a new model from YAML
-# model = YOLO("yolo12-obbx.pt")  # load a pretrained model (recommended for training)
-# model = YOLO("yolo12x.yaml").load("yolo12x.pt")  # build from YAML and transfer weights
+model = YOLO("yolo11x-obb.pt")  # load a pretrained model (recommended for training)
+model = YOLO("yolo11x-obb.yaml").load("yolo11x-obb.pt")  # build from YAML and transfer weights
 
-project = "results/ultralytics/yolov12/xobb"
+project = "results/ultralytics/yolov11/xobb"
 
 # Train the model
-results = model.train(data="ultralytics/cfg/datasets/CODrone.yaml", epochs=200, device=device, project=project, batch=16, optimizer='SGD',  name='codrone_vml6_')
+results = model.train(data="ultralytics/cfg/datasets/CODrone.yaml", epochs=300, device=device, project=project, batch=12, optimizer='SGD',  name='codrone_vml6_')
