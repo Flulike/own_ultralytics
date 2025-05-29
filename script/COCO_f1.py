@@ -351,7 +351,7 @@ def main(anno_json, pred_json):
             
         # 也可以尝试不同的置信度阈值
         print(f"\n使用不同置信度阈值 (IoU=0.5):")
-        score_thresholds = [0.3, 0.7]
+        score_thresholds = [0.3, 0.5]
         for score_thresh in score_thresholds:
             print(f"\n--- 置信度阈值: {score_thresh} ---")
             f1_results = calculate_f1_score(anno_json, pred_json, 
@@ -366,5 +366,5 @@ def main(anno_json, pred_json):
 
 if __name__ == '__main__':
     anno_json = '/mnt/vmlqnap01/datasets/Fisheye/test/test.json'
-    pred_json = '/home/guo/own_ultralytics/results/ultralytics/yolov11/x/fisheye_vml3_test/predictions_converted.json'
+    pred_json = '/home/guo/own_ultralytics/results/ultralytics/yolov11/x/fisheye_vml3_test3/predictions_converted.json'
     main(anno_json, pred_json)
