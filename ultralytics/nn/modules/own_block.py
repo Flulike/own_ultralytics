@@ -13,14 +13,14 @@ from timm.models.layers import to_2tuple, trunc_normal_
 
 # from basicsr.archs.arch_util import LayerNorm2d
 from timm.models.layers import LayerNorm2d
-from natten.functional import na2d_qk, na2d_av
+# from natten.functional import na2d_qk, na2d_av
 
 __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "CED",
-    "GGmix",
-    "DeformableNeighborhoodAttention",
+    # "GGmix",
+    # "DeformableNeighborhoodAttention",
 )
 
 #region WaveletDownsampleWrapper
@@ -190,7 +190,7 @@ class DepthwiseSeparableConv(nn.Module):
         return x
 
 
-# region GGmix
+# region GGmix not used
 def flow_warp(x,
               flow,
               interpolation='bilinear',
@@ -468,16 +468,8 @@ class GGmix(nn.Module):
 #endregion
 
 
+# region DeformableNeighborhoodAttention not used
 FUSED = True
-try:
-    from natten.functional import na2d
-except ImportError:
-    FUSED = False
-    print("natten 0.17 not installed, using dummy implementation")
-
-
-
-
 class DeformableNeighborhoodAttention(nn.Module):
 
 # 使用例：- [-1, 1, DeformableNeighborhoodAttention, [512, 8, 7]]  # 参数: dim, num_heads, kernel_size
@@ -702,3 +694,4 @@ class DeformableNeighborhoodAttention(nn.Module):
         y = self.proj_drop(self.proj_out(out))
 
         return y
+#endregion
