@@ -23,6 +23,8 @@ from .own_block import (
     CED,
     HaarWavelet,
     WFD,
+    GatedC3k2,
+    GatedFFN,
 )
 from .block import (
     C1,
@@ -172,4 +174,6 @@ __all__ = (
     "CED",
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
+    "GatedC3k2",
+    "GatedFFN",
 )

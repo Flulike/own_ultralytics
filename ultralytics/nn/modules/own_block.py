@@ -12,6 +12,12 @@ __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "CED",
+    "GatedCNNBlock",
+    "GatedC3k2",
+    "GatedCNNBlockWrapper",
+    "GatedBottleneck",
+    "GatedC3k",
+    "GatedFFN",
 )
 
 
@@ -177,3 +183,166 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.bottleneck(x)
         x = self.pointwise(x)
         return x
+    
+
+class GatedCNNBlock(nn.Module):
+    r""" Our implementation of Gated CNN Block: https://arxiv.org/pdf/1612.08083
+    Args: 
+        conv_ratio: control the number of channels to conduct depthwise convolution.
+            Conduct convolution on partial channels can improve practical efficiency.
+            The idea of partial channels is from ShuffleNet V2 (https://arxiv.org/abs/1807.11164) and 
+            also used by InceptionNeXt (https://arxiv.org/abs/2303.16900) and FasterNet (https://arxiv.org/abs/2303.03667)
+    """
+    def __init__(self, dim, expansion_ratio=8/3, kernel_size=7, conv_ratio=1.0,
+                 norm_layer=partial(nn.LayerNorm,eps=1e-6), 
+                 act_layer=nn.GELU,
+                 drop_path=0.,
+                 **kwargs):
+        super().__init__()
+        self.norm = norm_layer(dim)
+        hidden = int(expansion_ratio * dim)
+        self.fc1 = nn.Linear(dim, hidden * 2)
+        self.act = act_layer()
+        conv_channels = int(conv_ratio * dim)
+        self.split_indices = (hidden, hidden - conv_channels, conv_channels)
+        self.conv = nn.Conv2d(conv_channels, conv_channels, kernel_size=kernel_size, padding=kernel_size//2, groups=conv_channels)
+        self.fc2 = nn.Linear(hidden, dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x):
+        shortcut = x # [B, H, W, C]
+        x = self.norm(x)
+        g, i, c = torch.split(self.fc1(x), self.split_indices, dim=-1)
+        c = c.permute(0, 3, 1, 2) # [B, H, W, C] -> [B, C, H, W]
+        c = self.conv(c)
+        c = c.permute(0, 2, 3, 1) # [B, C, H, W] -> [B, H, W, C]
+        x = self.fc2(self.act(g) * torch.cat((i, c), dim=-1))
+        x = self.drop_path(x)
+        return x + shortcut
+
+
+class GatedC3k2(nn.Module):
+    """
+    GatedC3k2: A CSP-style module using GatedCNNBlock that can replace C3k2
+    完全兼容tasks.py中的参数传递机制
+    """
+    def __init__(self, c1, c2, n=1, shortcut=True, e=0.5, g=1, **kwargs):
+        super().__init__()
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList([
+            GatedCNNBlockWrapper(self.c) for _ in range(n)
+        ])
+        self.shortcut = shortcut
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class GatedCNNBlockWrapper(nn.Module):
+    """
+    Wrapper for GatedCNNBlock to handle tensor format conversion
+    and make it compatible with C3k2 interface.
+    """
+    def __init__(self, dim, expansion_ratio=8/3, kernel_size=7, conv_ratio=1.0, shortcut=True):
+        super().__init__()
+        self.gated_block = GatedCNNBlock(
+            dim=dim,
+            expansion_ratio=expansion_ratio,
+            kernel_size=kernel_size,
+            conv_ratio=conv_ratio
+        )
+        self.shortcut = shortcut
+        
+    def forward(self, x):
+        """
+        Forward pass with tensor format conversion.
+        Input: [B, C, H, W] -> Output: [B, C, H, W]
+        """
+        # Convert from [B, C, H, W] to [B, H, W, C] for GatedCNNBlock
+        x_permuted = x.permute(0, 2, 3, 1)
+        
+        # Apply GatedCNNBlock
+        out_permuted = self.gated_block(x_permuted)
+        
+        # Convert back to [B, C, H, W]
+        out = out_permuted.permute(0, 3, 1, 2)
+        
+        # Add shortcut if enabled and dimensions match
+        if self.shortcut:
+            return out + x
+        return out
+
+class GatedFFN(nn.Module):
+    """
+    Gated Feed-Forward Network (GatedFFN) module.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels  
+        n (int): Number of repetitions
+        shortcut (bool): Whether to use shortcut connection
+        g (int): Groups for convolution
+        e (float): Expansion ratio for hidden channels
+    """
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, 
+                 g: int = 1, e: float = 0.5):
+        super().__init__()
+        self.n = n
+        self.c = int(c2 * e)  # hidden channels
+        
+        # Projection layer: 1x1 conv to split into 2 parts
+        self.proj = nn.Sequential(
+            nn.Conv2d(c1, 2 * self.c, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(2 * self.c),
+            nn.SiLU()
+        )
+        
+        # RepDWConv equivalent using RepConv
+        self.rep = RepConv(self.c, self.c, k=3, s=1, p=1, g=self.c, act=True)
+        
+        # Additional depthwise conv layers if n > 1
+        self.m = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(self.c, self.c, kernel_size=3, stride=1, padding=1, groups=self.c, bias=False),
+                nn.BatchNorm2d(self.c)
+            ) for _ in range(n - 1)
+        ])
+        
+        # GELU activation
+        self.act = nn.GELU()
+        
+        # Final projection layer
+        self.cv2 = nn.Sequential(
+            nn.Conv2d(self.c, c2, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(c2)
+        )
+        
+        # Shortcut connection
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        shortcut = x.clone()
+        
+        # Split projection into two parts
+        x, z = self.proj(x).split([self.c, self.c], 1)
+        
+        # Apply RepConv
+        x = self.rep(x)
+        
+        # Apply additional depthwise convs if n > 1
+        if self.n != 1:
+            for m in self.m:
+                x = m(x)
+        
+        # Gated mechanism: multiply with activated z
+        x = x * self.act(z)
+        
+        # Final projection
+        x = self.cv2(x)
+        
+        # Add shortcut if enabled
+        return x + shortcut if self.add else x
