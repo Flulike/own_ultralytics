@@ -990,8 +990,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             A2C2f,
             WaveletDownsampleWrapper,
             CED,
-            GatedC3k2,
-            GatedFFN,
+            GatedABlock,
+            GatedA2C2f,
+            AdaptiveGatedC3k2,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1011,8 +1012,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2fCIB,
             C2PSA,
             A2C2f,
-            GatedC3k2,
-            GatedFFN,
+            GatedA2C2f,
+            AdaptiveGatedC3k2,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args

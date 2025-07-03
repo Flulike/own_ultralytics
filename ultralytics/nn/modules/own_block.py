@@ -1,23 +1,38 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from functools import partial
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
+from .block import C3k2
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 from einops import rearrange
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0. or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()
+        output = x.div(keep_prob) * random_tensor
+        return output
 
 __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "CED",
-    "GatedCNNBlock",
-    "GatedC3k2",
-    "GatedCNNBlockWrapper",
-    "GatedBottleneck",
-    "GatedC3k",
-    "GatedFFN",
+    "GatedABlock",
+    "GatedA2C2f",
+    "AdaptiveGatedC3k2",
 )
 
 
@@ -185,164 +200,208 @@ class DepthwiseSeparableConv(nn.Module):
         return x
     
 
-class GatedCNNBlock(nn.Module):
-    r""" Our implementation of Gated CNN Block: https://arxiv.org/pdf/1612.08083
-    Args: 
-        conv_ratio: control the number of channels to conduct depthwise convolution.
-            Conduct convolution on partial channels can improve practical efficiency.
-            The idea of partial channels is from ShuffleNet V2 (https://arxiv.org/abs/1807.11164) and 
-            also used by InceptionNeXt (https://arxiv.org/abs/2303.16900) and FasterNet (https://arxiv.org/abs/2303.03667)
+class GatedABlock(nn.Module):
     """
-    def __init__(self, dim, expansion_ratio=8/3, kernel_size=7, conv_ratio=1.0,
-                 norm_layer=partial(nn.LayerNorm,eps=1e-6), 
-                 act_layer=nn.GELU,
-                 drop_path=0.,
-                 **kwargs):
+    Gated Area-attention block combining area attention with gated mechanism.
+    
+    This module integrates:
+    - Area-based attention for spatial feature processing
+    - Gated mechanism for dynamic feature selection
+    - Residual connections for stable training
+    
+    Args:
+        dim (int): Number of input channels
+        num_heads (int): Number of attention heads
+        mlp_ratio (float): MLP expansion ratio for the FFN
+        area (int): Number of areas for spatial division
+        gate_ratio (float): Not used in current implementation (kept for compatibility)
+    """
+    def __init__(self, dim, num_heads=8, mlp_ratio=2.0, area=1, gate_ratio=0.5):
         super().__init__()
-        self.norm = norm_layer(dim)
-        hidden = int(expansion_ratio * dim)
-        self.fc1 = nn.Linear(dim, hidden * 2)
-        self.act = act_layer()
-        conv_channels = int(conv_ratio * dim)
-        self.split_indices = (hidden, hidden - conv_channels, conv_channels)
-        self.conv = nn.Conv2d(conv_channels, conv_channels, kernel_size=kernel_size, padding=kernel_size//2, groups=conv_channels)
-        self.fc2 = nn.Linear(hidden, dim)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x):
-        shortcut = x # [B, H, W, C]
-        x = self.norm(x)
-        g, i, c = torch.split(self.fc1(x), self.split_indices, dim=-1)
-        c = c.permute(0, 3, 1, 2) # [B, H, W, C] -> [B, C, H, W]
-        c = self.conv(c)
-        c = c.permute(0, 2, 3, 1) # [B, C, H, W] -> [B, H, W, C]
-        x = self.fc2(self.act(g) * torch.cat((i, c), dim=-1))
-        x = self.drop_path(x)
-        return x + shortcut
-
-
-class GatedC3k2(nn.Module):
-    """
-    GatedC3k2: A CSP-style module using GatedCNNBlock that can replace C3k2
-    完全兼容tasks.py中的参数传递机制
-    """
-    def __init__(self, c1, c2, n=1, shortcut=True, e=0.5, g=1, **kwargs):
-        super().__init__()
-        self.c = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        self.cv2 = Conv((2 + n) * self.c, c2, 1)
-        self.m = nn.ModuleList([
-            GatedCNNBlockWrapper(self.c) for _ in range(n)
-        ])
-        self.shortcut = shortcut
-
-    def forward(self, x):
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
-        return self.cv2(torch.cat(y, 1))
-
-
-class GatedCNNBlockWrapper(nn.Module):
-    """
-    Wrapper for GatedCNNBlock to handle tensor format conversion
-    and make it compatible with C3k2 interface.
-    """
-    def __init__(self, dim, expansion_ratio=8/3, kernel_size=7, conv_ratio=1.0, shortcut=True):
-        super().__init__()
-        self.gated_block = GatedCNNBlock(
-            dim=dim,
-            expansion_ratio=expansion_ratio,
-            kernel_size=kernel_size,
-            conv_ratio=conv_ratio
+        
+        # Area attention component (from A2C2f)
+        self.area_attn = self._create_area_attention(dim, num_heads, area)
+        
+        # Gated mechanism component - simplified approach
+        self.gate_proj = nn.Sequential(
+            nn.Conv2d(dim, dim, 1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.Sigmoid()  # Direct gating signal
         )
-        self.shortcut = shortcut
         
+        # Gated FFN - processes the gated input
+        self.gated_ffn = nn.Sequential(
+            nn.Conv2d(dim, int(dim * mlp_ratio), 1, bias=False),
+            nn.BatchNorm2d(int(dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Conv2d(int(dim * mlp_ratio), dim, 1, bias=False),
+            nn.BatchNorm2d(dim)
+        )
+        
+        # Learnable mixing weight
+        self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        
+    def _create_area_attention(self, dim, num_heads, area):
+        """Create area attention module similar to AAttn"""
+        head_dim = dim // num_heads
+        all_head_dim = head_dim * num_heads
+        
+        return nn.ModuleDict({
+            'qkv': Conv(dim, all_head_dim * 3, 1, act=False),
+            'proj': Conv(all_head_dim, dim, 1, act=False),
+            'pe': Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False)
+        })
+    
     def forward(self, x):
-        """
-        Forward pass with tensor format conversion.
-        Input: [B, C, H, W] -> Output: [B, C, H, W]
-        """
-        # Convert from [B, C, H, W] to [B, H, W, C] for GatedCNNBlock
-        x_permuted = x.permute(0, 2, 3, 1)
+        """Forward pass with gated area attention"""
+        shortcut = x
+        B, C, H, W = x.shape
         
-        # Apply GatedCNNBlock
-        out_permuted = self.gated_block(x_permuted)
+        # Area attention path
+        attn_out = self._forward_area_attention(x)
         
-        # Convert back to [B, C, H, W]
-        out = out_permuted.permute(0, 3, 1, 2)
+        # Gated mechanism path
+        gate = self.gate_proj(x)  # Generate gating signal [B, C, H, W]
+        gated_input = x * gate  # Apply gating to input
+        gated_out = self.gated_ffn(gated_input)
         
-        # Add shortcut if enabled and dimensions match
-        if self.shortcut:
-            return out + x
+        # Adaptive mixing of attention and gated features
+        mixed_out = self.alpha * attn_out + (1 - self.alpha) * gated_out
+        
+        return shortcut + mixed_out
+    
+    def _forward_area_attention(self, x):
+        """Simplified area attention forward pass"""
+        B, C, H, W = x.shape
+        N = H * W
+        
+        # Generate Q, K, V through convolution
+        qkv = self.area_attn['qkv'](x).flatten(2).transpose(1, 2)  # [B, N, 3C]
+        
+        # Simplified attention computation
+        q, k, v = qkv.chunk(3, dim=-1)
+        scale = (C // 8) ** -0.5  # Simplified scaling
+        
+        attn = torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1)
+        out = attn @ v
+        
+        # Reshape and project
+        out = out.transpose(1, 2).reshape(B, C, H, W)
+        out = self.area_attn['proj'](out)
+        
         return out
 
-class GatedFFN(nn.Module):
+
+class GatedA2C2f(nn.Module):
     """
-    Gated Feed-Forward Network (GatedFFN) module.
+    Gated Area-Attention C2f module that combines:
+    - A2C2f's area attention mechanism
+    - Gated control for dynamic feature selection
+    - Backward compatibility with existing YOLO architectures
+    
+    This module can replace A2C2f in YOLO12 or C3k2 in YOLO11 while
+    providing enhanced feature processing capabilities.
     
     Args:
         c1 (int): Input channels
-        c2 (int): Output channels  
-        n (int): Number of repetitions
-        shortcut (bool): Whether to use shortcut connection
-        g (int): Groups for convolution
-        e (float): Expansion ratio for hidden channels
+        c2 (int): Output channels
+        n (int): Number of GatedABlock layers
+        gate_ratio (float): Ratio for gated mechanism
+        area (int): Area division for attention
+        e (float): Channel expansion ratio
+        shortcut (bool): Whether to use shortcut connections
     """
-    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, 
-                 g: int = 1, e: float = 0.5):
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, gate_ratio=0.5, area=1, **kwargs):
         super().__init__()
-        self.n = n
+        
         self.c = int(c2 * e)  # hidden channels
         
-        # Projection layer: 1x1 conv to split into 2 parts
-        self.proj = nn.Sequential(
-            nn.Conv2d(c1, 2 * self.c, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(2 * self.c),
-            nn.SiLU()
-        )
+        # Ensure dimension compatibility for attention heads - make it divisible by 32
+        if self.c % 32 != 0:
+            self.c = ((self.c + 31) // 32) * 32  # Round up to nearest multiple of 32
         
-        # RepDWConv equivalent using RepConv
-        self.rep = RepConv(self.c, self.c, k=3, s=1, p=1, g=self.c, act=True)
+        # Input/output projections
+        self.cv1 = Conv(c1, self.c, 1, 1)
+        self.cv2 = Conv((1 + n) * self.c, c2, 1)
         
-        # Additional depthwise conv layers if n > 1
+        # Gated area attention blocks
         self.m = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(self.c, self.c, kernel_size=3, stride=1, padding=1, groups=self.c, bias=False),
-                nn.BatchNorm2d(self.c)
-            ) for _ in range(n - 1)
+            GatedABlock(
+                dim=self.c,
+                num_heads=self.c // 32,  # Ensure proper head count
+                area=area,
+                gate_ratio=gate_ratio
+            ) for _ in range(n)
         ])
         
-        # GELU activation
-        self.act = nn.GELU()
+        # Learnable residual scaling (similar to A2C2f)
+        self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if shortcut else None
         
-        # Final projection layer
-        self.cv2 = nn.Sequential(
-            nn.Conv2d(self.c, c2, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(c2)
-        )
-        
-        # Shortcut connection
-        self.add = shortcut and c1 == c2
-
     def forward(self, x):
-        shortcut = x.clone()
+        """Forward pass through gated area attention layers"""
+        shortcut = x
         
-        # Split projection into two parts
-        x, z = self.proj(x).split([self.c, self.c], 1)
+        # Process through gated blocks
+        y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
         
-        # Apply RepConv
-        x = self.rep(x)
+        # Concatenate and project
+        out = self.cv2(torch.cat(y, 1))
         
-        # Apply additional depthwise convs if n > 1
-        if self.n != 1:
-            for m in self.m:
-                x = m(x)
+        # Apply learnable residual scaling if enabled
+        if self.gamma is not None:
+            out = shortcut + self.gamma.view(-1, self.gamma.size(0), 1, 1) * out
+            
+        return out
+
+
+class AdaptiveGatedC3k2(nn.Module):
+    """
+    Adaptive Gated C3k2 that can dynamically choose between:
+    - Traditional C3k2 behavior for efficiency
+    - Gated mechanism for enhanced feature processing
+    - Area attention for spatial awareness
+    
+    This provides a unified interface that can adapt based on:
+    - Input feature resolution
+    - Computational budget
+    - Task requirements
+    """
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, 
+                 adaptive_mode='auto', gate_threshold=0.5, area=1, **kwargs):
+        super().__init__()
         
-        # Gated mechanism: multiply with activated z
-        x = x * self.act(z)
+        self.adaptive_mode = adaptive_mode
+        self.gate_threshold = gate_threshold
         
-        # Final projection
-        x = self.cv2(x)
+        # Traditional C3k2 path - match C3k2's parameter order: (c1, c2, n=1, c3k=False, e=0.5, g=1, shortcut=True)
+        self.traditional_path = C3k2(c1, c2, n, c3k=False, e=e, g=g, shortcut=shortcut, **kwargs)
         
-        # Add shortcut if enabled
-        return x + shortcut if self.add else x
+        # Gated enhancement path
+        self.gated_path = GatedA2C2f(c1, c2, n, shortcut, g, e, area=area, **kwargs)
+        
+        # Adaptive gate controller
+        if adaptive_mode == 'auto':
+            self.gate_controller = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(c1, c1 // 4, 1),
+                nn.ReLU(),
+                nn.Conv2d(c1 // 4, 1, 1),
+                nn.Sigmoid()
+            )
+        
+    def forward(self, x):
+        """Adaptive forward pass"""
+        if self.adaptive_mode == 'traditional':
+            return self.traditional_path(x)
+        elif self.adaptive_mode == 'gated':
+            return self.gated_path(x)
+        else:  # auto mode
+            # Compute gating signal based on input characteristics
+            gate_signal = self.gate_controller(x)
+            gate_value = gate_signal.mean().item()
+            
+            if gate_value > self.gate_threshold:
+                return self.gated_path(x)
+            else:
+                return self.traditional_path(x)
