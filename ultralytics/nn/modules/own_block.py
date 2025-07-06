@@ -306,10 +306,11 @@ class GatedA2C2f(nn.Module):
         c1 (int): Input channels
         c2 (int): Output channels
         n (int): Number of GatedABlock layers
-        gate_ratio (float): Ratio for gated mechanism
-        area (int): Area division for attention
-        e (float): Channel expansion ratio
         shortcut (bool): Whether to use shortcut connections
+        g (int): Groups for convolutions
+        e (float): Channel expansion ratio
+        gate_ratio (float): Ratio for gated mechanism (auto-configured in tasks.py)
+        area (int): Area division for attention (auto-configured in tasks.py)
     """
     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, gate_ratio=0.5, area=1, **kwargs):
         super().__init__()
@@ -366,6 +367,17 @@ class AdaptiveGatedC3k2(nn.Module):
     - Input feature resolution
     - Computational budget
     - Task requirements
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels  
+        n (int): Number of layers
+        shortcut (bool): Whether to use shortcut connections
+        g (int): Groups for convolutions
+        e (float): Channel expansion ratio
+        adaptive_mode (str): 'auto', 'traditional', or 'gated' (auto-configured in tasks.py)
+        gate_threshold (float): Threshold for adaptive mode switching (auto-configured in tasks.py)
+        area (int): Area division for attention (auto-configured in tasks.py)
     """
     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, 
                  adaptive_mode='auto', gate_threshold=0.5, area=1, **kwargs):
@@ -374,11 +386,13 @@ class AdaptiveGatedC3k2(nn.Module):
         self.adaptive_mode = adaptive_mode
         self.gate_threshold = gate_threshold
         
-        # Traditional C3k2 path - match C3k2's parameter order: (c1, c2, n=1, c3k=False, e=0.5, g=1, shortcut=True)
-        self.traditional_path = C3k2(c1, c2, n, c3k=False, e=e, g=g, shortcut=shortcut, **kwargs)
+        # Traditional C3k2 path - explicitly pass keyword arguments to avoid parameter order issues
+        self.traditional_path = C3k2(c1=c1, c2=c2, n=n, c3k=False, e=e, g=g, shortcut=shortcut)
         
-        # Gated enhancement path
-        self.gated_path = GatedA2C2f(c1, c2, n, shortcut, g, e, area=area, **kwargs)
+        # Gated enhancement path - explicitly pass keyword arguments
+        default_gate_ratio = 0.5  # Default gate ratio if not provided
+        self.gated_path = GatedA2C2f(c1=c1, c2=c2, n=n, shortcut=shortcut, g=g, e=e, 
+                                    gate_ratio=default_gate_ratio, area=area)
         
         # Adaptive gate controller
         if adaptive_mode == 'auto':
