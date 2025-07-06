@@ -2,61 +2,102 @@
 
 # Ultralytics YOLO11-Gated object detection model with enhanced gated mechanisms
 # Enhanced with GatedA2C2f and AdaptiveGatedC3k2 modules
-# Based on YOLO11 architecture with progressive gated enhancements
+# Parameters can be auto-configured by model scale OR manually specified in config file
 
 # Parameters
 nc: 80 # number of classes
 scales: # model compound scaling constants, i.e. 'model=yolo11n-gated.yaml' will call this with scale 'n'
   # [depth, width, max_channels]
+  # Gated parameters can be auto-configured OR manually specified:
+  # 
+  # AUTO-CONFIG (by model scale):
+  # n: adaptive_mode='traditional', gate_threshold=0.3, area=1 (efficiency focused)
+  # s: gate_ratio=0.3, adaptive_mode='auto', gate_threshold=0.4, area=1 (balanced)
+  # m: gate_ratio=0.4, adaptive_mode='auto', gate_threshold=0.5, area=1 (more gating)  
+  # l/x: gate_ratio=0.6, adaptive_mode='gated', gate_threshold=0.6, area=2 (full gating)
+  #
+  # MANUAL CONFIG (in backbone/head args):
+  # GatedA2C2f: [c_out, shortcut, gate_ratio, area]
+  # AdaptiveGatedC3k2: [c_out, shortcut, adaptive_mode, gate_threshold, area]
   n: [0.50, 0.25, 1024]
   s: [0.50, 0.50, 1024] 
   m: [0.50, 1.00, 512]
   l: [1.00, 1.00, 512]
   x: [1.00, 1.50, 512]
 
-# YOLO11n-Gated backbone with selective gated enhancements
+# YOLO11n-Gated backbone with auto-configured gated enhancements
 backbone:
   # [from, repeats, module, args]
   - [-1, 1, Conv, [64, 3, 2]] # 0-P1/2
   - [-1, 1, Conv, [128, 3, 2]] # 1-P2/4
   
-  # 早期层使用传统模块保持效率
+  # Early layers use traditional modules for efficiency
   - [-1, 2, C3k2, [256, False, 0.25]] # 2
-  - [-1, 1, CED, [256, 0.5]] # 3-P3/8 (保持你的 CED 下采样)
+  - [-1, 1, CED, [256, 0.5]] # 3-P3/8 (custom downsampling)
   
-  # 中间层开始引入门控机制
-  - [-1, 2, AdaptiveGatedC3k2, [512, False]] # 4 使用默认参数
+  # Middle layers introduce adaptive gating (mix of auto and manual config)
+  - [-1, 2, AdaptiveGatedC3k2, [512, False]] # 4 (auto-configured based on scale)
   - [-1, 1, CED, [512, 0.5]] # 5-P4/16
   
-  # 深层使用自适应门控
-  - [-1, 2, AdaptiveGatedC3k2, [512, True]] # 6 自适应模式
+  # Deeper layers use adaptive gating with manual tuning
+  - [-1, 2, AdaptiveGatedC3k2, [512, True, 'auto', 0.6, 1]] # 6 (manual: mode='auto', threshold=0.6, area=1)
   - [-1, 1, CED, [1024, 0.5]] # 7-P5/32
   
-  # 最深层使用增强门控
-  - [-1, 2, GatedA2C2f, [1024, True]] # 8 使用shortcut
+  # Deepest layers use enhanced gating with custom settings
+  - [-1, 2, GatedA2C2f, [1024, True, 0.7, 2]] # 8 (manual: gate_ratio=0.7, area=2)
   - [-1, 1, SPPF, [1024, 5]] # 9
-  - [-1, 2, C2PSA, [1024]] # 10 (保持你的注意力机制)
+  - [-1, 2, C2PSA, [1024]] # 10 (attention mechanism)
 
 # YOLO11n-Gated head with strategic gated placement
 head:
-  # P4 上采样路径 - 使用门控增强中等尺度特征
+  # P4 upsampling path - enhanced gating for medium-scale features
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 6], 1, Concat, [1]] # cat backbone P4
-  - [-1, 2, GatedA2C2f, [512, False]] # 13 门控增强 P4
+  - [-1, 2, GatedA2C2f, [512, False, 0.5, 1]] # 13 (manual: gate_ratio=0.5, area=1 for P4)
 
-  # P3 上采样路径 - 门控增强小目标检测  
+  # P3 upsampling path - gated enhancement for small object detection  
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 4], 1, Concat, [1]] # cat backbone P3
-  - [-1, 2, GatedA2C2f, [256, False]] # 16 (P3/8-small) 门控增强小目标
+  - [-1, 2, GatedA2C2f, [256, False, 0.3, 4]] # 16 (P3/8-small) auto-configured for small targets
 
-  # P4 下采样路径 - 自适应选择
-  - [-1, 1, WaveletDownsampleWrapper, [256]] # 保持你的小波下采样
+  # P4 downsampling path - adaptive selection with custom threshold
+  - [-1, 1, WaveletDownsampleWrapper, [256]] # custom wavelet downsampling
   - [[-1, 13], 1, Concat, [1]] # cat head P4
-  - [-1, 2, AdaptiveGatedC3k2, [512, False]] # 19 自适应处理
+  - [-1, 2, AdaptiveGatedC3k2, [512, False, 'gated', 0.4]] # 19 (manual: force gated mode, threshold=0.4)
 
-  # P5 下采样路径 - 传统模块保持效率
+  # P5 downsampling path - traditional for efficiency on large objects
   - [-1, 1, WaveletDownsampleWrapper, [512]]
   - [[-1, 10], 1, Concat, [1]] # cat head P5  
-  - [-1, 2, C3k2, [1024, True]] # 22 (P5/32-large) 大目标保持传统高效
+  - [-1, 2, C3k2, [1024, True]] # 22 (P5/32-large) traditional high efficiency
 
-  - [[16, 19, 22], 1, Detect, [nc]] # Detect(P3, P4, P5) 
+  - [[16, 19, 22], 1, Detect, [nc]] # Detect(P3, P4, P5)
+
+# Configuration Options:
+# 
+# 🔧 MANUAL CONFIGURATION SYNTAX:
+# 
+# GatedA2C2f:
+#   Auto:   [c_out, shortcut]                          # Uses scale-based defaults
+#   Manual: [c_out, shortcut, gate_ratio, area]        # Custom parameters
+#   
+#   - gate_ratio: 0.1-1.0 (how much gating to apply, higher = more gating)
+#   - area: 1, 2, 4 (spatial attention area division, higher = more spatial detail)
+#
+# AdaptiveGatedC3k2:  
+#   Auto:   [c_out, shortcut]                                      # Uses scale-based defaults
+#   Manual: [c_out, shortcut, adaptive_mode, gate_threshold, area] # Custom parameters
+#   
+#   - adaptive_mode: 'traditional', 'auto', 'gated' (processing mode)
+#   - gate_threshold: 0.0-1.0 (threshold for auto mode switching)
+#   - area: 1, 2, 4 (spatial attention area, higher = more detail)
+#
+# 📊 AUTO-CONFIGURATION BY SCALE:
+# - n: Focus on efficiency (traditional mode, low thresholds)
+# - s/m: Balanced approach (auto mode, moderate gating) 
+# - l/x: Performance focus (gated mode, high gating ratios, larger areas)
+#
+# 💡 TIPS:
+# - Use auto-config for standard cases
+# - Use manual config for task-specific tuning
+# - Higher gate_ratio = more feature selection but slower
+# - Larger area = better spatial awareness but more computation 
