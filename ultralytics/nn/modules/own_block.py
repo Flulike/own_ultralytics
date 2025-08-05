@@ -189,6 +189,7 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.pointwise(x)
         return x
 
+#region DeformableNeighborhoodAttention
 FUSED = True
 class DeformableNeighborhoodAttention(nn.Module):
 
