@@ -990,6 +990,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             A2C2f,
             WaveletDownsampleWrapper,
             CED,
+            GatedABlock,
+            GatedA2C2f,
+            AdaptiveGatedC3k2,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1009,6 +1012,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2fCIB,
             C2PSA,
             A2C2f,
+            GatedA2C2f,
+            AdaptiveGatedC3k2,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1044,6 +1049,112 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 legacy = False
                 if scale in "lx":  # for L/X sizes
                     args.extend((True, 1.2))
+            if m is GatedA2C2f:
+                legacy = False
+                # Handle two cases: auto-config vs manual config
+                # Auto-config: [c1, c2, n, shortcut] or [c1, c2, n]
+                # Manual config: [c1, c2, n, shortcut, gate_ratio, area] etc.
+                
+                # If args length <= 4, it's auto-config mode
+                if len(args) <= 4:
+                    # Auto-configuration: complete basic parameters first
+                    if len(args) < 4:  # Missing shortcut
+                        args.append(True)
+                    # Add standard g, e parameters  
+                    args.extend([1, 0.5])  # g=1, e=0.5
+                    
+                    # Add auto-configured gated parameters
+                    gate_ratio = 0.5  # default gate ratio
+                    if scale in "s":  # small models
+                        gate_ratio = 0.3
+                    elif scale in "m":  # medium models  
+                        gate_ratio = 0.4
+                    elif scale in "lx":  # large/extra-large models
+                        gate_ratio = 0.6
+                    
+                    area = 1  # default area
+                    if scale in "lx":  # large/extra-large models use larger area
+                        area = 2
+                    
+                    args.extend([gate_ratio, area])
+                else:
+                    # Manual configuration: user provided some/all gated parameters
+                    # Expected manual format: [c1, c2, n, shortcut, gate_ratio, area, ...]
+                    # We need to insert g=1, e=0.5 at positions 4,5
+                    if len(args) == 5:  # [c1, c2, n, shortcut, gate_ratio]
+                        args.insert(4, 1)    # Insert g=1
+                        args.insert(5, 0.5)  # Insert e=0.5
+                        # args is now [c1, c2, n, shortcut, g, e, gate_ratio]
+                        # Need to add area with default
+                        area = 1 if scale not in "lx" else 2
+                        args.append(area)
+                    elif len(args) == 6:  # [c1, c2, n, shortcut, gate_ratio, area]
+                        args.insert(4, 1)    # Insert g=1
+                        args.insert(5, 0.5)  # Insert e=0.5
+                        # args is now [c1, c2, n, shortcut, g, e, gate_ratio, area]
+                    # For len(args) > 6, assume user provided all parameters correctly
+                
+                # Final args format: [c1, c2, n, shortcut, g, e, gate_ratio, area]
+            if m is AdaptiveGatedC3k2:
+                legacy = False
+                # Handle two cases: auto-config vs manual config
+                # Auto-config: [c1, c2, n, shortcut] or [c1, c2, n]  
+                # Manual config: [c1, c2, n, shortcut, adaptive_mode, gate_threshold, area] etc.
+                
+                # If args length <= 4, it's auto-config mode
+                if len(args) <= 4:
+                    # Auto-configuration: complete basic parameters first
+                    if len(args) < 4:  # Missing shortcut
+                        args.append(True)
+                    # Add standard g, e parameters
+                    args.extend([1, 0.5])  # g=1, e=0.5
+                    
+                    # Add auto-configured gated parameters
+                    adaptive_mode = 'auto'  # default adaptive mode
+                    if scale in "n":  # nano models - prefer traditional for efficiency
+                        adaptive_mode = 'traditional'
+                    elif scale in "lx":  # large/extra-large models - full gating
+                        adaptive_mode = 'gated'
+                    
+                    gate_threshold = 0.5  # default gate threshold
+                    if scale in "n":  # nano models
+                        gate_threshold = 0.3
+                    elif scale in "s":  # small models
+                        gate_threshold = 0.4
+                    elif scale in "lx":  # large/extra-large models
+                        gate_threshold = 0.6
+                    
+                    area = 1  # default area
+                    if scale in "lx":  # large/extra-large models use larger area
+                        area = 2
+                    
+                    args.extend([adaptive_mode, gate_threshold, area])
+                else:
+                    # Manual configuration: user provided some/all gated parameters
+                    # Expected manual format: [c1, c2, n, shortcut, adaptive_mode, gate_threshold, area, ...]
+                    # We need to insert g=1, e=0.5 at positions 4,5
+                    if len(args) == 5:  # [c1, c2, n, shortcut, adaptive_mode]
+                        args.insert(4, 1)    # Insert g=1
+                        args.insert(5, 0.5)  # Insert e=0.5
+                        # args is now [c1, c2, n, shortcut, g, e, adaptive_mode]
+                        # Need to add gate_threshold and area with defaults
+                        gate_threshold = 0.5 if scale not in "lx" else 0.6
+                        area = 1 if scale not in "lx" else 2
+                        args.extend([gate_threshold, area])
+                    elif len(args) == 6:  # [c1, c2, n, shortcut, adaptive_mode, gate_threshold]  
+                        args.insert(4, 1)    # Insert g=1
+                        args.insert(5, 0.5)  # Insert e=0.5
+                        # args is now [c1, c2, n, shortcut, g, e, adaptive_mode, gate_threshold]
+                        # Need to add area
+                        area = 1 if scale not in "lx" else 2
+                        args.append(area)
+                    elif len(args) == 7:  # [c1, c2, n, shortcut, adaptive_mode, gate_threshold, area]
+                        args.insert(4, 1)    # Insert g=1  
+                        args.insert(5, 0.5)  # Insert e=0.5
+                        # args is now [c1, c2, n, shortcut, g, e, adaptive_mode, gate_threshold, area]
+                    # For len(args) > 7, assume user provided all parameters correctly
+                
+                # Final args format: [c1, c2, n, shortcut, g, e, adaptive_mode, gate_threshold, area]
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in frozenset({HGStem, HGBlock}):
