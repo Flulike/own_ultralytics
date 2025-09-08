@@ -16,5 +16,5 @@ model = YOLO("yolo12x.yaml").load("yolo12x.pt")  # build from YAML and transfer 
 
 project = "results/ultralytics/yolov12/x"
 
-# Train the model
+# Train the model 1
 results = model.train(data="ultralytics/cfg/datasets/VisDrone.yaml", epochs=300, imgsz=640, device=device, project=project, batch=12, optimizer='SGD',  name='visdrone_vml6_', pretrained=False)
