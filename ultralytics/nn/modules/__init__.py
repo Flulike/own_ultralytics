@@ -20,7 +20,7 @@ Example:
 from .own_block import (
     DepthwiseSeparableConv,
     WaveletDownsampleWrapper,
-    CED,
+    EOC,
     HaarWavelet,
     WFD,
     GatedABlock,
@@ -172,7 +172,7 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
-    "CED",
+    "EOC",
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "GatedABlock",

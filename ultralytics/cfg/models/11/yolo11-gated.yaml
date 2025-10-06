@@ -34,15 +34,15 @@ backbone:
   
   # Early layers use traditional modules for efficiency
   - [-1, 2, C3k2, [256, False, 0.25]] # 2
-  - [-1, 1, CED, [256, 0.5]] # 3-P3/8 (custom downsampling)
+  - [-1, 1, EOC, [256, 0.5]] # 3-P3/8 (custom downsampling)
   
   # Middle layers introduce adaptive gating (mix of auto and manual config)
   - [-1, 2, AdaptiveGatedC3k2, [512, False]] # 4 (auto-configured based on scale)
-  - [-1, 1, CED, [512, 0.5]] # 5-P4/16
+  - [-1, 1, EOC, [512, 0.5]] # 5-P4/16
   
   # Deeper layers use adaptive gating with VisDrone tuning for small objects
   - [-1, 2, AdaptiveGatedC3k2, [512, True, 'auto', 0.4, 4]] # 6 (VisDrone: lower threshold, finer spatial attention)
-  - [-1, 1, CED, [1024, 0.5]] # 7-P5/32
+  - [-1, 1, EOC, [1024, 0.5]] # 7-P5/32
   
   # Deepest layers use enhanced gating optimized for aerial detection
   - [-1, 2, GatedA2C2f, [1024, True, 0.5, 4]] # 8 (VisDrone: moderate gating, maximum spatial detail)

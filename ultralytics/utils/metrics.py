@@ -68,7 +68,7 @@ def box_iou(box1, box2, eps=1e-7):
     return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
 
 
-def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=False, SIoU=False, ShapeIoU=False, PIoU=False, PIoU2=False, eps=1e-7, scale=0.0, Lambda=1.3):
+def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=False, SIoU=False, ShapeIoU=False, PIoU=False, PIoU2=False, InterpIoU=False, eps=1e-7, scale=0.0, Lambda=1.3, alpha=0.5, dynamic=False, gamma=1.5, detach_alpha=False):
     """
     Calculate Intersection over Union (IoU) of box1(1, 4) to box2(n, 4).
 
@@ -82,10 +82,14 @@ def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=Fa
         CIoU (bool, optional): If True, calculate Complete IoU. Defaults to False.
         EIoU (bool, optional): If True, calculate Efficient IoU. Defaults to False.
         SIoU (bool, optional): If True, calculate Scylla IoU. Defaults to False.
+        InterpIoU (bool, optional): If True, calculate Interpolated IoU. Defaults to False.
         eps (float, optional): A small value to avoid division by zero. Defaults to 1e-7.
+        alpha (float, optional): Interpolation coefficient for InterpIoU in [0,1]. Defaults to 0.5.
+        dynamic (bool, optional): If True, set alpha = 1 - IoU(pred, target) for InterpIoU. Defaults to False.
+        detach_alpha (bool, optional): If True, stop gradient through alpha for InterpIoU. Defaults to False.
 
     Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
+        (torch.Tensor): IoU, GIoU, DIoU, CIoU, or InterpIoU values depending on the specified flags.
     """
     # print("YES! bbox_iou")
     # print(SIoU)
@@ -110,6 +114,68 @@ def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=Fa
 
     # IoU
     iou = inter / union
+    
+    # InterpIoU: IoU between interpolated boxes and target to provide gradients in non-overlap cases
+    if InterpIoU:
+        # Store original shape for reshaping
+        orig_shape = box1.shape[:-1]
+        
+        # Convert to xyxy format if needed
+        if xywh:
+            from ultralytics.utils import ops
+            p = ops.xywh2xyxy(box1)
+            t = ops.xywh2xyxy(box2)
+        else:
+            p, t = box1, box2
+        
+        # Flatten for processing
+        p_flat = p.view(-1, 4)
+        t_flat = t.view(-1, 4)
+        
+        
+        # Compute dynamic alpha if requested with stability improvements
+        if dynamic:
+            # Use current IoU for dynamic alpha calculation with clamping for stability
+            iou_clamped = iou.view(-1).clamp(1e-7, 1.0 - 1e-7)  # Avoid extreme values
+            alpha_val = (1.0 - iou_clamped).pow(min(gamma, 2.0))  # Limit gamma for stability
+            if detach_alpha:
+                alpha_val = alpha_val.detach()
+        else:
+            alpha_val = torch.full((p_flat.shape[0],), alpha, dtype=p.dtype, device=p.device)
+        
+        # Clamp alpha to avoid extreme interpolations
+        alpha_val = alpha_val.clamp(0.01, 0.99).view(-1, 1)
+        
+        # ----------------- CRITICAL FIX HERE -----------------
+        # Compute interpolated boxes using the theoretically consistent formula
+        # This ensures that when IoU=0, alpha=1, and interp=t (the target)
+        interp = (1 - alpha_val) * p_flat + alpha_val * t_flat
+        # ---------------------------------------------------
+        
+        # Compute IoU between interpolated box and target with numerical stability
+        i_x1, i_y1, i_x2, i_y2 = interp.chunk(4, -1)
+        t_x1, t_y1, t_x2, t_y2 = t_flat.chunk(4, -1)
+        
+        # Ensure valid box coordinates
+        i_x1, i_x2 = torch.min(i_x1, i_x2), torch.max(i_x1, i_x2)
+        i_y1, i_y2 = torch.min(i_y1, i_y2), torch.max(i_y1, i_y2)
+        
+        # Intersection area between interpolated and target
+        inter_it = (i_x2.minimum(t_x2) - i_x1.maximum(t_x1)).clamp_(0) * \
+                (i_y2.minimum(t_y2) - i_y1.maximum(t_y1)).clamp_(0)
+        
+        # Union area between interpolated and target
+        area_i = (i_x2 - i_x1 + eps) * (i_y2 - i_y1 + eps)  # Add eps for stability
+        area_t = (t_x2 - t_x1 + eps) * (t_y2 - t_y1 + eps)
+        union_it = area_i + area_t - inter_it + eps
+        
+        # InterpIoU result with additional stability check
+        interp_iou = (inter_it + eps) / (union_it + eps)
+        interp_iou = interp_iou.clamp(0.0, 1.0)  # Ensure valid IoU range
+        
+        # Reshape to original shape
+        return interp_iou.view(orig_shape)
+    
     if CIoU or DIoU or GIoU or EIoU or SIoU or ShapeIoU or PIoU or PIoU2:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
@@ -179,6 +245,7 @@ def  bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=Fa
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
     return iou  # IoU
+
 
 def get_inner_iou(box1, box2, xywh=True, eps=1e-7, ratio=0.7):
     from ultralytics.utils import ops
