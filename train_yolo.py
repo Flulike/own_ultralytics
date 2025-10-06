@@ -7,7 +7,7 @@ import sys
 project_root = os.path.dirname(os.path.abspath(__file__))
 os.environ["PYTHONPATH"] = f"{project_root}:{os.environ.get('PYTHONPATH', '')}"
 
-device = [3]
+device = [0, 1]
 
 # Load a model
 model = YOLO("yolo11x.yaml")  # build a new model from YAML
@@ -16,7 +16,7 @@ model = YOLO("yolo11x.yaml").load("yolo11x.pt")  # build from YAML and transfer 
 
 project = "results/ultralytics/yolov11/x/iou"
 date = datetime.now().strftime("%Y%m%d_%H%M")
-name = f'{date}_interp'
+name = f'{date}_c'
 
 # Train the model
 results = model.train(data="ultralytics/cfg/datasets/VisDrone.yaml", epochs=400, imgsz=640, device=device, project=project, batch=12, optimizer='SGD',  name=name, pretrained=True)

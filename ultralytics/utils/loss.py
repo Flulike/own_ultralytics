@@ -234,7 +234,7 @@ class BboxLoss(nn.Module):
                 alpha=self.interp_alpha,
                 dynamic=self.interp_dynamic,
                 detach_alpha=True,  # Detach alpha to prevent gradient issues
-                gamma=0.5,  # Reduce gamma for stability
+                gamma=0.6,  # Reduce gamma for stability
             )
         elif self.iou_type == "giou":
             iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, GIoU=True)

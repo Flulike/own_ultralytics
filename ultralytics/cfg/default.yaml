@@ -99,7 +99,7 @@ warmup_bias_lr: 0.1 # (float) warmup initial bias lr
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) cls loss gain (scale with pixels)
 dfl: 1.5 # (float) dfl loss gain
-iou_type: interpiou # (str) IoU loss type for box regression: ciou, diou, giou, siou, interpiou, innersiou, innerciou
+iou_type: ciou # (str) IoU loss type for box regression: ciou, diou, giou, siou, interpiou, innersiou, innerciou
 interp_iou_alpha: 0.3 # (float) InterpIoU: interpolation coeff when dynamic=False  
 interp_iou_dynamic: True # (bool) InterpIoU: use dynamic alpha = 1 - IoU (disabled for stability)
 inner_iou_ratio: 1.25 # (float) InnerSIoU: inner box ratio for inner IoU calculation

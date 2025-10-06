@@ -989,7 +989,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2fCIB,
             A2C2f,
             WaveletDownsampleWrapper,
-            CED,
+            EOC,
             GatedABlock,
             GatedA2C2f,
             AdaptiveGatedC3k2,
