@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-device = [2]
+device = [0, 1]
 
 # Load a model
 model = YOLO("yolo11x.yaml")  # build a new model from YAML
@@ -15,6 +15,6 @@ results = model.train(
     epochs=300, 
     device=device, 
     project=project, 
-    batch=12, 
+    batch=16, 
     optimizer='SGD',  
     name='codrone_vml4_',)
