@@ -31,7 +31,7 @@ class DropPath(nn.Module):
 __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
-    "CED",
+    "PSD",
     "GatedABlock",
     "GatedA2C2f",
     "AdaptiveGatedC3k2",
@@ -108,10 +108,10 @@ def autopad(k, p=None):
     return k // 2 if p is None else p
 #endregion
 
-class CED(nn.Module):
-    # 使用例：- [-1, 1, CED,  [256, 0.5]] 
+class PSD(nn.Module):
+    # 使用例：- [-1, 1, PSD,  [256, 0.5]] 
     """
-    Channel Expansion + Depthwise (CED) block:
+    Phase-split downsampling (PSD) block:
       1) 1x1 conv to reduce channels to c = int(c2 * e)
       2) depthwise conv 3x3
       3) spatial downsample by splitting and concatenating 2x2 grids

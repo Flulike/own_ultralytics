@@ -1,16 +1,22 @@
-from ultralytics import RTDETR
+from ultralytics import YOLO
+from datetime import datetime
+import os
+import sys
 
-# Load a COCO-pretrained RT-DETR-l model
-model = RTDETR("rtdetr-l.pt")
-
-# Display model information (optional)
-model.info()
+# 添加项目根目录到Python路径
+project_root = os.path.dirname(os.path.abspath(__file__))
+os.environ["PYTHONPATH"] = f"{project_root}:{os.environ.get('PYTHONPATH', '')}"
 
 device = [2]
 
-# Train the model on the COCO8 example dataset for 100 epochs
-results = model.train(data="/home/guo/own_ultralytics/ultralytics/cfg/datasets/_visdrone.yaml", epochs=100, imgsz=640,project='results/ultralytics/RTDETR',
-                name='rtdetr-l_visdrone_vml6_',)
+# Load a model
+model = YOLO("yolo11x.yaml")  # build a new model from YAML
+model = YOLO("yolo11x.pt")  # load a pretrained model (recommended for training)
+model = YOLO("yolo11x.yaml").load("yolo11x.pt")  # build from YAML and transfer weights
 
-# # Run inference with the RT-DETR-l model on the 'bus.jpg' image
-# results = model("path/to/bus.jpg")
+project = "results/ultralytics/yolov11/x/test"
+date = datetime.now().strftime("%Y%m%d_%H%M")
+name = f'{date}_test'
+
+# Train the model
+results = model.train(data="ultralytics/cfg/datasets/VisDrone.yaml", epochs=300, imgsz=640, device=device, project=project, batch=12, optimizer='SGD',  name=name, pretrained=True)

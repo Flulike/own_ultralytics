@@ -181,3 +181,6 @@ data/
 
 # logs
 logs/
+
+paper/
+external/
