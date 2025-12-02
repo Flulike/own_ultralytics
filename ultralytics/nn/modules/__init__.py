@@ -20,6 +20,7 @@ Examples:
 from .own_block import (
     WaveletDownsampleWrapper,
     PSD,
+    GGMix,
 )
 from .block import (
     C1,
@@ -185,4 +186,5 @@ __all__ = (
     "v10Detect",
     "WaveletDownsampleWrapper",
     "PSD",
+    "GGMix",
 )

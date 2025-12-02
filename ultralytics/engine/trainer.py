@@ -565,12 +565,43 @@ class BaseTrainer:
             torch.cuda.empty_cache()
 
     def read_results_csv(self):
-        """Read results.csv into a dictionary using polars."""
-        import polars as pl  # scope for faster 'import ultralytics'
+        """Read results.csv into a dictionary.
+
+        Prefers polars for speed but gracefully falls back to the builtin csv module when polars is unavailable.
+        """
+        if not self.csv.exists():
+            return {}
 
         try:
+            import polars as pl  # scope for faster 'import ultralytics'
+
             return pl.read_csv(self.csv, infer_schema_length=None).to_dict(as_series=False)
-        except Exception:
+        except ModuleNotFoundError:
+            LOGGER.warning(
+                "results.csv: polars not installed, falling back to Python csv reader (pip install polars for speed)."
+            )
+        except Exception as e:
+            LOGGER.warning(f"results.csv: polars failed to load ({e}), using csv fall-back.")
+
+        import csv
+
+        try:
+            with self.csv.open(newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                data = {field: [] for field in (reader.fieldnames or [])}
+                for row in reader:
+                    for k in data:
+                        value = row.get(k)
+                        if value in ("", None):
+                            data[k].append(None)
+                        else:
+                            try:
+                                data[k].append(float(value))
+                            except ValueError:
+                                data[k].append(value)
+                return data
+        except Exception as e:
+            LOGGER.warning(f"results.csv: fallback parsing failed ({e}). Returning empty results.")
             return {}
 
     def _model_train(self):

@@ -70,6 +70,7 @@ from ultralytics.nn.modules import (
     v10Detect,
     WaveletDownsampleWrapper,
     PSD,
+    GGMix,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -155,7 +156,7 @@ class BaseModel(torch.nn.Module):
             return self._predict_augment(x)
         return self._predict_once(x, profile, visualize, embed)
 
-    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+    def _predict_once(self, x, profile=False, visualize=False, embed=None, img_ori=None):
         """Perform a forward pass through the network.
 
         Args:
@@ -168,6 +169,7 @@ class BaseModel(torch.nn.Module):
             (torch.Tensor): The last output of the model.
         """
         y, dt, embeddings = [], [], []  # outputs
+        img_reference = x if img_ori is None else img_ori
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
         for m in self.model:
@@ -175,7 +177,10 @@ class BaseModel(torch.nn.Module):
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
+            if getattr(m, "requires_img_ori", False):
+                x = m(x, img_ori=img_reference)
+            else:
+                x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -1557,6 +1562,7 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
             PSD,
             WaveletDownsampleWrapper,
+            GGMix,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

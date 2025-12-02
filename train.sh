@@ -1,1 +1,1 @@
-python train.py > logs/yolo11x.log 2>&1
+python train.py > logs/ggmix.log 2>&1

@@ -783,6 +783,11 @@ def check_amp(model):
         return a.shape == b.shape and torch.allclose(a, b.float(), atol=0.5)  # close to 0.5 absolute tolerance
 
     im = ASSETS / "bus.jpg"  # image to check
+    if not im.exists():
+        LOGGER.warning(
+            f"{prefix}default asset '{im}' not found. Using a synthetic image for AMP verification instead."
+        )
+        im = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
     LOGGER.info(f"{prefix}running Automatic Mixed Precision (AMP) checks...")
     warning_msg = "Setting 'amp=True'. If you experience zero-mAP or NaN losses you can disable AMP with amp=False."
     try:

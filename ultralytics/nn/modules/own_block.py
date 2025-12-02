@@ -36,6 +36,7 @@ __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
     "PSD",
+    "GGMix",
     "GatedABlock",
     "GatedA2C2f",
     "AdaptiveGatedC3k2",
@@ -615,73 +616,47 @@ class MultiHeadAttention(nn.Module):
         out = self.proj(out)
         return out
 
-
-class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bottleneck_ratio=0.5, groups=4):
-        """
-        :param in_channels: 输入通道数
-        :param out_channels: 输出通道数
-        :param kernel_size: 卷积核大小
-        :param stride: 步幅
-        :param padding: 填充
-        :param bottleneck_ratio: 用于瓶颈层的通道缩减比例
-        :param groups: 逐点卷积的分组数
-        """
-        super().__init__()
-        bottleneck_channels = int(in_channels * bottleneck_ratio)
-        
-        # 深度卷积
-        self.depthwise = nn.Conv2d(
-            in_channels, in_channels, kernel_size, stride=stride, padding=padding, groups=in_channels
-        )
-        
-        # 瓶颈层降维
-        self.bottleneck = nn.Conv2d(in_channels, bottleneck_channels, kernel_size=1, stride=1, padding=0)
-        
-        # 分组逐点卷积
-        self.pointwise = nn.Conv2d(
-            bottleneck_channels, out_channels, kernel_size=1, stride=1, padding=0, groups=groups
-        )
-
-    def forward(self, x):
-        x = self.depthwise(x)
-        x = self.bottleneck(x)
-        x = self.pointwise(x)
-        return x
     
 
-class GGmix(nn.Module):
-    def __init__(self, dim, window_size=4, bias=True, is_deformable=True, ratio=0.5):
+class GGMix(nn.Module):
+    def __init__(self, c1, c2, window_size=4, bias=True, is_deformable=True, ratio=0.5):
         super().__init__()
 
-        self.dim = dim
+        if c1 != c2:
+            raise ValueError(f"GGMix requires matching input/output channels, but got c1={c1} and c2={c2}.")
+
+        self.dim = c2
         self.window_size = window_size
         self.is_deformable = is_deformable
         self.ratio = ratio
+        self.requires_img_ori = True
 
         k = 3
         d = 2
 
-        self.project_v = nn.Conv2d(dim, dim, 1, 1, 0, bias=bias)
-        self.project_q = nn.Linear(dim, dim, bias=bias)
-        self.project_k = nn.Linear(dim, dim, bias=bias)
+        self.project_v = nn.Conv2d(self.dim, self.dim, 1, 1, 0, bias=bias)
+        self.project_q = nn.Linear(self.dim, self.dim, bias=bias)
+        self.project_k = nn.Linear(self.dim, self.dim, bias=bias)
 
-        self.multihead_attn = MultiHeadAttention(dim)
-        self.conv_sptial = DepthwiseSeparableConv(dim, dim)   
-        self.project_out = nn.Conv2d(dim, dim, 1, 1, 0, bias=bias)
+        self.multihead_attn = MultiHeadAttention(self.dim)
+        self.conv_sptial = DepthwiseSeparableConv(self.dim, self.dim)   
+        self.project_out = nn.Conv2d(self.dim, self.dim, 1, 1, 0, bias=bias)
 
         self.act = nn.GELU()
-        self.route = Global_Guidance(dim, window_size, ratio=ratio)
+        self.route = Global_Guidance(self.dim, window_size, ratio=ratio)
 
         # 生成global feature
         self.global_predictor = nn.Sequential(
             nn.Conv2d(3, 8, 1, 1, 0, bias=True),
             nn.LeakyReLU(negative_slope=0.1, inplace=True),
-            nn.Conv2d(8, dim+2, 3, 1, 1, bias=True),
+            nn.Conv2d(8, self.dim + 2, 3, 1, 1, bias=True),
             nn.LeakyReLU(negative_slope=0.1, inplace=True)
         )
 
     def forward(self, x, condition_global=None, mask=None, train_mode=True, img_ori=None):
+        if img_ori is None:
+            raise ValueError("GGMix requires 'img_ori' input but received None.")
+
         N, C, H, W = x.shape
 
         global_status = self.global_predictor(img_ori)
