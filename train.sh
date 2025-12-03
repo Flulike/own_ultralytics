@@ -1,1 +1,0 @@
-python train.py > logs/ggmix_m.log 2>&1
