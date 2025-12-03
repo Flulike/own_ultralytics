@@ -644,6 +644,8 @@ class GGMix(nn.Module):
                                         nn.LeakyReLU(negative_slope=0.1, inplace=True),
                                         nn.Conv2d(8, 2, 3, 1, 1, bias=True),
                                         nn.LeakyReLU(negative_slope=0.1, inplace=True))
+        
+        self.ln=LayerNorm(self.dim)
 
     def forward(self,x,condition_global=None, mask=None, train_mode=True, img_ori=None):
         if img_ori is None:
@@ -715,6 +717,8 @@ class GGMix(nn.Module):
         out = attn_out
         out = self.act(self.conv_sptial(out))*ca + out
         out = self.project_out(out)
+
+        out = self.ln(out + x)
 
         # if self.training:
         #     return out, torch.mean(mask,dim=1)
