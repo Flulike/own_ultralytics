@@ -1,0 +1,14 @@
+path: /mnt/vmlqnap02/home/guo/dataset/carclassyolo
+train: train/labels
+val: valid/labels
+test: test/labels
+
+names:
+  0: car
+  1: light-cargo
+  2: bus
+  3: cargo
+  4: special
+  5: motorcycle
+  6: bicycle
+  7: person

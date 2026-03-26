@@ -181,3 +181,10 @@ data/
 
 # logs
 logs/
+
+paper/
+external/
+
+train_yolo.py
+train.py
+train.sh

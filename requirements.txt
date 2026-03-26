@@ -13,3 +13,4 @@ einops
 pandas
 seaborn
 ultralytics-thop
+polars

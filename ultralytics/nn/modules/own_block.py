@@ -1,26 +1,45 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from functools import partial
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
+from .block import C3k2
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 import einops
 from einops import rearrange
-from timm.models.layers import to_2tuple, trunc_normal_
 
-# from basicsr.archs.arch_util import LayerNorm2d
-from timm.models.layers import LayerNorm2d
-# from natten.functional import na2d_qk, na2d_av
+import math
+import numpy as np
+
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0. or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()
+        output = x.div(keep_prob) * random_tensor
+        return output
 
 __all__= (
     "DepthwiseSeparableConv",
     "WaveletDownsampleWrapper",
-    "CED",
-    # "GGmix",
-    # "DeformableNeighborhoodAttention",
+    "PSD",
+    "GGMix",
+    "GatedABlock",
+    "GatedA2C2f",
+    "AdaptiveGatedC3k2",
 )
 
 #region WaveletDownsampleWrapper
@@ -94,10 +113,10 @@ def autopad(k, p=None):
     return k // 2 if p is None else p
 #endregion
 
-class CED(nn.Module):
-    # 使用例：- [-1, 1, CED,  [256, 0.5]] 
+class PSD(nn.Module):
+    # 使用例：- [-1, 1, PSD,  [256, 0.5]] 
     """
-    Channel Expansion + Depthwise (CED) block:
+    Phase-split downsampling (PSD) block:
       1) 1x1 conv to reduce channels to c = int(c2 * e)
       2) depthwise conv 3x3
       3) spatial downsample by splitting and concatenating 2x2 grids
@@ -188,230 +207,520 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.bottleneck(x)
         x = self.pointwise(x)
         return x
-
-FUSED = True
-class DeformableNeighborhoodAttention(nn.Module):
-
-# 使用例：- [-1, 1, DeformableNeighborhoodAttention, [512, 8, 7]]  # 参数: dim, num_heads, kernel_size
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        kernel_size: int,
-        dilation: int = 1,
-        offset_range_factor=1.0,
-        stride=1,
-        use_pe=True,
-        dwc_pe=True,
-        no_off=False,
-        fixed_pe=False,
-        is_causal: bool = False,
-        rel_pos_bias: bool = False,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-    ):
-
+    
+#region gatemethod
+class GatedABlock(nn.Module):
+    """
+    Gated Area-attention block combining area attention with gated mechanism.
+    
+    This module integrates:
+    - Area-based attention for spatial feature processing
+    - Gated mechanism for dynamic feature selection
+    - Residual connections for stable training
+    
+    Args:
+        dim (int): Number of input channels
+        num_heads (int): Number of attention heads
+        mlp_ratio (float): MLP expansion ratio for the FFN
+        area (int): Number of areas for spatial division
+        gate_ratio (float): Not used in current implementation (kept for compatibility)
+    """
+    def __init__(self, dim, num_heads=8, mlp_ratio=2.0, area=1, gate_ratio=0.5):
         super().__init__()
-        n_head_channels = dim // num_heads
-        n_groups = num_heads
-        self.dwc_pe = dwc_pe
-        self.n_head_channels = n_head_channels
-        self.scale = self.n_head_channels ** -0.5
-        self.n_heads = num_heads
-        self.nc = n_head_channels * num_heads
-        self.n_groups = num_heads
-        self.n_group_channels = self.nc // self.n_groups
-        self.n_group_heads = self.n_heads // self.n_groups
-        self.use_pe = use_pe
-        self.fixed_pe = fixed_pe
-        self.no_off = no_off
-        self.offset_range_factor = offset_range_factor
-        self.ksize = kernel_size
-        self.kernel_size = (kernel_size, kernel_size)
-        self.stride = stride
-        self.dilation = dilation
-        self.is_causal = is_causal
-        kk = self.ksize
-        pad_size = kk // 2 if kk != stride else 0
-
-        self.conv_offset = nn.Sequential(
-            nn.Conv2d(self.n_group_channels, self.n_group_channels,
-                      kk, stride, pad_size, groups=self.n_group_channels),
-            LayerNorm2d(self.n_group_channels),
+        
+        # Area attention component (from A2C2f)
+        self.area_attn = self._create_area_attention(dim, num_heads, area)
+        
+        # Gated mechanism component - simplified approach
+        self.gate_proj = nn.Sequential(
+            nn.Conv2d(dim, dim, 1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.Sigmoid()  # Direct gating signal
+        )
+        
+        # Gated FFN - processes the gated input
+        self.gated_ffn = nn.Sequential(
+            nn.Conv2d(dim, int(dim * mlp_ratio), 1, bias=False),
+            nn.BatchNorm2d(int(dim * mlp_ratio)),
             nn.GELU(),
-            nn.Conv2d(self.n_group_channels, 2, 1, 1, 0, bias=False)
+            nn.Conv2d(int(dim * mlp_ratio), dim, 1, bias=False),
+            nn.BatchNorm2d(dim)
         )
-        if self.no_off:
-            for m in self.conv_offset.parameters():
-                m.requires_grad_(False)
-
-        self.proj_q = nn.Conv2d(
-            self.nc, self.nc,
-            kernel_size=1, stride=1, padding=0
-        )
-
-        self.proj_k = nn.Conv2d(
-            self.nc, self.nc,
-            kernel_size=1, stride=1, padding=0
-        )
-
-        self.proj_v = nn.Conv2d(
-            self.nc, self.nc,
-            kernel_size=1, stride=1, padding=0
-        )
-
-        self.proj_out = nn.Conv2d(
-            self.nc, self.nc,
-            kernel_size=1, stride=1, padding=0
-        )
-
-        if rel_pos_bias:
-            self.rpb = nn.Parameter(
-                torch.zeros(
-                    num_heads,
-                    (2 * self.kernel_size[0] - 1),
-                    (2 * self.kernel_size[1] - 1),
-                )
-            )
-            trunc_normal_(self.rpb, std=0.02, mean=0.0, a=-2.0, b=2.0)
-        else:
-            self.register_parameter("rpb", None)
-
-        self.proj_drop = nn.Dropout(proj_drop, inplace=True)
-        self.attn_drop = nn.Dropout(attn_drop, inplace=True)
-
-        self.rpe_table = nn.Conv2d(
-            self.nc, self.nc, kernel_size=3, stride=1, padding=1, groups=self.nc)
-
-    @torch.no_grad()
-    def _get_ref_points(self, H_key, W_key, B, dtype, device):
-
-        ref_y, ref_x = torch.meshgrid(
-            torch.linspace(0.5, H_key - 0.5, H_key,
-                           dtype=dtype, device=device),
-            torch.linspace(0.5, W_key - 0.5, W_key,
-                           dtype=dtype, device=device),
-            indexing='ij'
-        )
-        ref = torch.stack((ref_y, ref_x), -1)
-        ref[..., 1].div_(W_key - 1.0).mul_(2.0).sub_(1.0)
-        ref[..., 0].div_(H_key - 1.0).mul_(2.0).sub_(1.0)
-        ref = ref[None, ...].expand(
-            B * self.n_groups, -1, -1, -1)  # B * g H W 2
-
-        return ref
-
-    @torch.no_grad()
-    def _get_q_grid(self, H, W, B, dtype, device):
-
-        ref_y, ref_x = torch.meshgrid(
-            torch.arange(0, H, dtype=dtype, device=device),
-            torch.arange(0, W, dtype=dtype, device=device),
-            indexing='ij'
-        )
-        ref = torch.stack((ref_y, ref_x), -1)
-        ref[..., 1].div_(W - 1.0).mul_(2.0).sub_(1.0)
-        ref[..., 0].div_(H - 1.0).mul_(2.0).sub_(1.0)
-        ref = ref[None, ...].expand(
-            B * self.n_groups, -1, -1, -1)  # B * g H W 2
-
-        return ref
-
+        
+        # Learnable mixing weight
+        self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        
+    def _create_area_attention(self, dim, num_heads, area):
+        """Create area attention module similar to AAttn"""
+        head_dim = dim // num_heads
+        all_head_dim = head_dim * num_heads
+        
+        return nn.ModuleDict({
+            'qkv': Conv(dim, all_head_dim * 3, 1, act=False),
+            'proj': Conv(all_head_dim, dim, 1, act=False),
+            'pe': Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False)
+        })
+    
     def forward(self, x):
+        """Forward pass with gated area attention"""
+        shortcut = x
+        B, C, H, W = x.shape
+        
+        # Area attention path
+        attn_out = self._forward_area_attention(x)
+        
+        # Gated mechanism path
+        gate = self.gate_proj(x)  # Generate gating signal [B, C, H, W]
+        gated_input = x * gate  # Apply gating to input
+        gated_out = self.gated_ffn(gated_input)
+        
+        # Adaptive mixing of attention and gated features
+        mixed_out = self.alpha * attn_out + (1 - self.alpha) * gated_out
+        
+        return shortcut + mixed_out
+    
+    def _forward_area_attention(self, x):
+        """Simplified area attention forward pass"""
+        B, C, H, W = x.shape
+        N = H * W
+        
+        # Generate Q, K, V through convolution
+        qkv = self.area_attn['qkv'](x).flatten(2).transpose(1, 2)  # [B, N, 3C]
+        
+        # Simplified attention computation
+        q, k, v = qkv.chunk(3, dim=-1)
+        scale = (C // 8) ** -0.5  # Simplified scaling
+        
+        attn = torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1)
+        out = attn @ v
+        
+        # Reshape and project
+        out = out.transpose(1, 2).reshape(B, C, H, W)
+        out = self.area_attn['proj'](out)
+        
+        return out
 
-        B, C, H, W = x.size()
-        dtype, device = x.dtype, x.device
 
-        q = self.proj_q(x)
-        q_off = einops.rearrange(
-            q, 'b (g c) h w -> (b g) c h w', g=self.n_groups, c=self.n_group_channels)
-        offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
+class GatedA2C2f(nn.Module):
+    """
+    Gated Area-Attention C2f module that combines:
+    - A2C2f's area attention mechanism
+    - Gated control for dynamic feature selection
+    - Backward compatibility with existing YOLO architectures
+    
+    This module can replace A2C2f in YOLO12 or C3k2 in YOLO11 while
+    providing enhanced feature processing capabilities.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        n (int): Number of GatedABlock layers
+        shortcut (bool): Whether to use shortcut connections
+        g (int): Groups for convolutions
+        e (float): Channel expansion ratio
+        gate_ratio (float): Ratio for gated mechanism (auto-configured in tasks.py)
+        area (int): Area division for attention (auto-configured in tasks.py)
+    """
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, gate_ratio=0.5, area=1, **kwargs):
+        super().__init__()
+        
+        self.c = int(c2 * e)  # hidden channels
+        
+        # Ensure dimension compatibility for attention heads - make it divisible by 32
+        if self.c % 32 != 0:
+            self.c = ((self.c + 31) // 32) * 32  # Round up to nearest multiple of 32
+        
+        # Input/output projections
+        self.cv1 = Conv(c1, self.c, 1, 1)
+        self.cv2 = Conv((1 + n) * self.c, c2, 1)
+        
+        # Gated area attention blocks
+        self.m = nn.ModuleList([
+            GatedABlock(
+                dim=self.c,
+                num_heads=self.c // 32,  # Ensure proper head count
+                area=area,
+                gate_ratio=gate_ratio
+            ) for _ in range(n)
+        ])
+        
+        # Learnable residual scaling (similar to A2C2f)
+        self.gamma = nn.Parameter(0.01 * torch.ones(c2), requires_grad=True) if shortcut else None
+        
+    def forward(self, x):
+        """Forward pass through gated area attention layers"""
+        shortcut = x
+        
+        # Process through gated blocks
+        y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
+        
+        # Concatenate and project
+        out = self.cv2(torch.cat(y, 1))
+        
+        # Apply learnable residual scaling if enabled
+        if self.gamma is not None:
+            out = shortcut + self.gamma.view(-1, self.gamma.size(0), 1, 1) * out
+            
+        return out
 
-        Hk, Wk = offset.size(2), offset.size(3)
 
-        if self.offset_range_factor >= 0 and not self.no_off:
-            offset_range = torch.tensor(
-                [1.0 / (Hk - 1.0), 1.0 / (Wk - 1.0)], device=device).reshape(1, 2, 1, 1)
-            offset = offset.tanh().mul(offset_range).mul(self.offset_range_factor)
-
-        offset = einops.rearrange(offset, 'b p h w -> b h w p')
-        reference = self._get_ref_points(Hk, Wk, B, dtype, device)
-
-        if self.no_off:
-            offset = offset.fill_(0.0)
-
-        if self.offset_range_factor >= 0:
-            pos = offset + reference
-        else:
-            pos = (offset + reference).clamp(-1., +1.)
-
-        if self.no_off:
-            x_sampled = F.avg_pool2d(
-                x, kernel_size=self.stride, stride=self.stride)
-            assert x_sampled.size(2) == Hk and x_sampled.size(
-                3) == Wk, f"Size is {x_sampled.size()}"
-        else:
-            x_sampled = F.grid_sample(
-                input=x.reshape(B * self.n_groups,
-                                self.n_group_channels, H, W),
-                grid=pos[..., (1, 0)],  # y, x -> x, y
-                mode='bilinear', align_corners=True)  # B * g, Cg, Hg, Wg
-
-        x_sampled = x_sampled.reshape(B, C, H, W)
-
-        residual_lepe = self.rpe_table(q)
-
-        if self.rpb is not None or not FUSED:
-            q = einops.rearrange(q, 'b (g c) h w -> b g h w c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-            k = einops.rearrange(self.proj_k(x_sampled), 'b (g c) h w -> b g h w c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-            v = einops.rearrange(self.proj_v(x_sampled), 'b (g c) h w -> b g h w c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-
-            q = q*self.scale
-            attn = na2d_qk(
-                q,
-                k,
-                kernel_size=self.kernel_size,
-                dilation=self.dilation,
-                is_causal=self.is_causal,
-                rpb=self.rpb,
+class AdaptiveGatedC3k2(nn.Module):
+    """
+    Adaptive Gated C3k2 that can dynamically choose between:
+    - Traditional C3k2 behavior for efficiency
+    - Gated mechanism for enhanced feature processing
+    - Area attention for spatial awareness
+    
+    This provides a unified interface that can adapt based on:
+    - Input feature resolution
+    - Computational budget
+    - Task requirements
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels  
+        n (int): Number of layers
+        shortcut (bool): Whether to use shortcut connections
+        g (int): Groups for convolutions
+        e (float): Channel expansion ratio
+        adaptive_mode (str): 'auto', 'traditional', or 'gated' (auto-configured in tasks.py)
+        gate_threshold (float): Threshold for adaptive mode switching (auto-configured in tasks.py)
+        area (int): Area division for attention (auto-configured in tasks.py)
+    """
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, 
+                 adaptive_mode='auto', gate_threshold=0.5, area=1, **kwargs):
+        super().__init__()
+        
+        self.adaptive_mode = adaptive_mode
+        self.gate_threshold = gate_threshold
+        
+        # Traditional C3k2 path - explicitly pass keyword arguments to avoid parameter order issues
+        self.traditional_path = C3k2(c1=c1, c2=c2, n=n, c3k=False, e=e, g=g, shortcut=shortcut)
+        
+        # Gated enhancement path - explicitly pass keyword arguments
+        default_gate_ratio = 0.5  # Default gate ratio if not provided
+        self.gated_path = GatedA2C2f(c1=c1, c2=c2, n=n, shortcut=shortcut, g=g, e=e, 
+                                    gate_ratio=default_gate_ratio, area=area)
+        
+        # Adaptive gate controller
+        if adaptive_mode == 'auto':
+            self.gate_controller = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(c1, c1 // 4, 1),
+                nn.ReLU(),
+                nn.Conv2d(c1 // 4, 1, 1),
+                nn.Sigmoid()
             )
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            out = na2d_av(
-                attn,
-                v,
-                kernel_size=self.kernel_size,
-                dilation=self.dilation,
-                is_causal=self.is_causal,
-            )
-            out = einops.rearrange(out, 'b g h w c -> b (g c) h w')
+        
+    def forward(self, x):
+        """Adaptive forward pass"""
+        if self.adaptive_mode == 'traditional':
+            return self.traditional_path(x)
+        elif self.adaptive_mode == 'gated':
+            return self.gated_path(x)
+        else:  # auto mode
+            # Compute gating signal based on input characteristics
+            gate_signal = self.gate_controller(x)
+            gate_value = gate_signal.mean().item()
+            
+            if gate_value > self.gate_threshold:
+                return self.gated_path(x)
+            else:
+                return self.traditional_path(x)
+#endregion            
 
+#region our GGMix
+def flow_warp(x,
+              flow,
+              interpolation='bilinear',
+              padding_mode='border',
+              align_corners=True):
+    """Warp an image or a feature map with optical flow.
+
+    Args:
+        x (Tensor): Tensor with size (n, c, h, w).
+        flow (Tensor): Tensor with size (n, h, w, 2). The last dimension is
+            a two-channel, denoting the width and height relative offsets.
+            Note that the values are not normalized to [-1, 1].
+        interpolation (str): Interpolation mode: 'nearest' or 'bilinear'.
+            Default: 'bilinear'.
+        padding_mode (str): Padding mode: 'zeros' or 'border' or 'reflection'.
+            Default: 'zeros'.
+        align_corners (bool): Whether align corners. Default: True.
+
+    Returns:
+        Tensor: Warped image or feature map.
+    """
+    if x.size()[-2:] != flow.size()[1:3]:
+        raise ValueError(f'The spatial sizes of input ({x.size()[-2:]}) and '
+                         f'flow ({flow.size()[1:3]}) are not the same.')
+    _, _, h, w = x.size()
+    # create mesh grid
+    device = flow.device
+    grid_y, grid_x = torch.meshgrid(
+        torch.arange(0, h, device=device, dtype=x.dtype),
+        torch.arange(0, w, device=device, dtype=x.dtype))
+    grid = torch.stack((grid_x, grid_y), 2)  # h, w, 2
+    grid.requires_grad = False
+
+    grid_flow = grid + flow
+    # scale grid_flow to [-1,1]
+    grid_flow_x = 2.0 * grid_flow[:, :, :, 0] / max(w - 1, 1) - 1.0
+    grid_flow_y = 2.0 * grid_flow[:, :, :, 1] / max(h - 1, 1) - 1.0
+    grid_flow = torch.stack((grid_flow_x, grid_flow_y), dim=3)
+    output = F.grid_sample(
+        x,
+        grid_flow,
+        mode=interpolation,
+        padding_mode=padding_mode,
+        align_corners=align_corners)
+    return output
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_first"):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.data_format = data_format
+        if self.data_format not in ["channels_last", "channels_first"]:
+            raise NotImplementedError 
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        if self.data_format == "channels_last":
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        elif self.data_format == "channels_first":
+            u = x.mean(1, keepdim=True)
+            s = (x - u).pow(2).mean(1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
+            x = self.weight[:, None, None] * x + self.bias[:, None, None]
+            return x
+
+
+class Global_Guidance(nn.Module):
+    def __init__(self, dim, window_size=4, k=4,ratio=0.5):
+        super().__init__()
+
+        self.ratio = ratio
+        self.window_size = window_size
+        cdim = dim + k
+        embed_dim = window_size**2
+        
+        self.in_conv = nn.Sequential(
+            nn.Conv2d(cdim, cdim//4, 1),
+            LayerNorm(cdim//4),
+            nn.LeakyReLU(negative_slope=0.1, inplace=True),
+        )
+
+        self.out_offsets = nn.Sequential(
+            nn.Conv2d(cdim//4, cdim//8, 1),
+            nn.LeakyReLU(negative_slope=0.1, inplace=True),
+            nn.Conv2d(cdim//8, 2, 1),
+        )
+
+        self.out_mask = nn.Sequential(
+            nn.Linear(embed_dim, window_size),
+            nn.LeakyReLU(negative_slope=0.1, inplace=True),
+            nn.Linear(window_size, 2),
+            nn.Softmax(dim=-1)
+        )
+
+        self.out_CA = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(cdim//4, dim, 1),
+            nn.Sigmoid(),
+        )
+
+        self.out_SA = nn.Sequential(
+            nn.Conv2d(cdim//4, 1, 3, 1, 1),
+            nn.Sigmoid(),
+        )        
+
+
+    def forward(self, input_x, mask=None, ratio=0.5, train_mode=False):
+
+        x = self.in_conv(input_x)
+
+        offsets = self.out_offsets(x)
+        offsets = offsets.tanh().mul(8.0)
+
+        ca = self.out_CA(x)
+        sa = self.out_SA(x)
+        
+        x = torch.mean(x, keepdim=True, dim=1) 
+
+        x = rearrange(x,'b c (h dh) (w dw) -> b (h w) (dh dw c)', dh=self.window_size, dw=self.window_size)
+        B, N, C = x.size()
+
+        pred_score = self.out_mask(x)
+        mask = F.gumbel_softmax(pred_score, hard=True, dim=2)[:, :, 0:1]
+
+        if self.training or train_mode:
+            return mask, offsets, ca, sa
         else:
-            q = einops.rearrange(q, 'b (g c) h w -> b h w g c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-            k = einops.rearrange(self.proj_k(x_sampled), 'b (g c) h w -> b h w g c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-            v = einops.rearrange(self.proj_v(x_sampled), 'b (g c) h w -> b h w g c',
-                                 g=self.n_groups, b=B, c=self.n_group_channels, h=H, w=W)
-            out = na2d(
-                q,
-                k,
-                v,
-                kernel_size=self.kernel_size,
-                dilation=self.dilation,
-                is_causal=self.is_causal,
-                rpb=self.rpb,
-                scale=self.scale,
-            )
-            out = out.reshape(B, H, W, C).permute(0, 3, 1, 2)
+            score = pred_score[:, : , 0]
+            B, N = score.shape
+            r = torch.mean(mask,dim=(0,1))*1.0
+            if self.ratio == 1:
+                num_keep_node = N #int(N * r) #int(N * r)
+            else:
+                num_keep_node = min(int(N * r * 2 * self.ratio), N)
+            idx = torch.argsort(score, dim=1, descending=True)
+            idx1 = idx[:, :num_keep_node]
+            idx2 = idx[:, num_keep_node:]
+            return [idx1, idx2], offsets, ca, sa
 
-        if self.use_pe and self.dwc_pe:
-            out = out + residual_lepe
+def batch_index_select(x, idx):
+    if len(x.size()) == 3:
+        B, N, C = x.size()
+        N_new = idx.size(1)
+        offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1) * N
+        idx = idx + offset
+        out = x.reshape(B*N, C)[idx.reshape(-1)].reshape(B, N_new, C)
+        return out
+    elif len(x.size()) == 2:
+        B, N = x.size()
+        N_new = idx.size(1)
+        offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1) * N
+        idx = idx + offset
+        out = x.reshape(B*N)[idx.reshape(-1)].reshape(B, N_new)
+        return out
+    else:
+        raise NotImplementedError
 
-        y = self.proj_drop(self.proj_out(out))
+def batch_index_fill(x, x1, x2, idx1, idx2):
+    B, N, C = x.size()
+    B, N1, C = x1.size()
+    B, N2, C = x2.size()
 
-        return y
+    offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1)
+    idx1 = idx1 + offset * N
+    idx2 = idx2 + offset * N
+
+    x = x.reshape(B*N, C)
+
+    x[idx1.reshape(-1)] = x1.reshape(B*N1, C)
+    x[idx2.reshape(-1)] = x2.reshape(B*N2, C)
+
+    x = x.reshape(B, N, C)
+    return x
+
+
+class GGMix(nn.Module):
+    #It used to set the window_size as 8, but it cannot to be trained in the out[2], which has size as [12,512,20,20], so I set the window_size as 4
+    def __init__(self, c1, c2, window_size=4, bias=True, is_deformable=True, ratio=0.5): 
+        super().__init__()
+
+        if c1 != c2:
+            raise ValueError(f"GGMix expects matching input/output channels but received {c1} -> {c2}.")
+
+        self.dim = c2
+        self.window_size = window_size
+        self.is_deformable = is_deformable
+        self.ratio = ratio
+        self.requires_img_ori = True
+
+        k = 3
+        d = 2
+
+        self.project_v = nn.Conv2d(self.dim, self.dim, 1, 1, 0, bias = bias)
+        self.project_q = nn.Linear(self.dim, self.dim, bias = bias)
+        self.project_k = nn.Linear(self.dim, self.dim, bias = bias)
+
+        # Conv
+        self.conv_sptial = nn.Sequential(
+            nn.Conv2d(self.dim, self.dim, k, padding=k//2, groups=self.dim),
+            nn.Conv2d(self.dim, self.dim, k, stride=1, padding=((k//2)*d), groups=self.dim, dilation=d))        
+        self.project_out = nn.Conv2d(self.dim, self.dim, 1, 1, 0, bias = bias)
+
+        self.act = nn.GELU()
+        # Predictor
+        self.route = Global_Guidance(self.dim,window_size,ratio=ratio)
+
+        self.global_predictor = nn.Sequential(nn.Conv2d(3, 8, 1, 1, 0, bias=True),
+                                        nn.LeakyReLU(negative_slope=0.1, inplace=True),
+                                        nn.Conv2d(8, 2, 3, 1, 1, bias=True),
+                                        nn.LeakyReLU(negative_slope=0.1, inplace=True))
+        
+        self.ln=LayerNorm(self.dim)
+
+    def forward(self,x,condition_global=None, mask=None, train_mode=True, img_ori=None):
+        if img_ori is None:
+            raise ValueError("GGMix requires the original RGB image 'img_ori', but received None.")
+
+        N,C,H,W = x.shape
+
+        v = self.project_v(x)
+        condition_global = self.global_predictor(img_ori)
+        condition_global = F.interpolate(condition_global, size=(H, W), mode='bilinear', align_corners=False)
+
+        if self.is_deformable:
+            coords = torch.linspace(-1, 1, self.window_size, device=x.device, dtype=x.dtype)
+            condition_wind = torch.stack(torch.meshgrid(coords, coords, indexing="ij"))\
+                    .unsqueeze(0).repeat(N, 1, H//self.window_size, W//self.window_size)
+            if condition_global is None:
+                _condition = torch.cat([v, condition_wind], dim=1)
+            else:
+                _condition = torch.cat([v, condition_global, condition_wind], dim=1)
+
+        mask, offsets, ca, sa = self.route(_condition,ratio=self.ratio,train_mode=train_mode)
+
+        q = x 
+        k = x + flow_warp(x, offsets.permute(0,2,3,1))
+        qk = torch.cat([q,k],dim=1)
+
+        vs = v*sa
+
+        v  = rearrange(v,'b c (h dh) (w dw) -> b (h w) (dh dw c)', dh=self.window_size, dw=self.window_size)
+        vs = rearrange(vs,'b c (h dh) (w dw) -> b (h w) (dh dw c)', dh=self.window_size, dw=self.window_size)
+        qk = rearrange(qk,'b c (h dh) (w dw) -> b (h w) (dh dw c)', dh=self.window_size, dw=self.window_size)
+
+        if self.training or train_mode:
+            N_ = v.shape[1]
+            v1,v2 = v*mask, vs*(1-mask)   
+            qk1 = qk*mask 
+        else:
+            idx1, idx2 = mask
+            _, N_ = idx1.shape
+            v1,v2 = batch_index_select(v,idx1),batch_index_select(vs,idx2)
+            qk1 = batch_index_select(qk,idx1)
+
+        v1 = rearrange(v1,'b n (dh dw c) -> (b n) (dh dw) c', n=N_, dh=self.window_size, dw=self.window_size)
+        qk1 = rearrange(qk1,'b n (dh dw c) -> b (n dh dw) c', n=N_, dh=self.window_size, dw=self.window_size)
+
+        q1,k1 = torch.chunk(qk1,2,dim=2)
+        q1 = self.project_q(q1)
+        k1 = self.project_k(k1)
+        q1 = rearrange(q1,'b (n dh dw) c -> (b n) (dh dw) c', n=N_, dh=self.window_size, dw=self.window_size)
+        k1 = rearrange(k1,'b (n dh dw) c -> (b n) (dh dw) c', n=N_, dh=self.window_size, dw=self.window_size)
+  
+        attn = q1 @ k1.transpose(-2, -1)
+        attn = attn.softmax(dim=-1)
+        f_attn = attn@v1
+
+        f_attn = rearrange(f_attn,'(b n) (dh dw) c -> b n (dh dw c)', 
+            b=N, n=N_, dh=self.window_size, dw=self.window_size)
+
+        if not (self.training or train_mode):
+            attn_out = batch_index_fill(v.clone(), f_attn, v2.clone(), idx1, idx2)
+        else:
+            attn_out = f_attn + v2
+
+        attn_out = rearrange(
+            attn_out, 'b (h w) (dh dw c) -> b (c) (h dh) (w dw)', 
+            h=H//self.window_size, w=W//self.window_size, dh=self.window_size, dw=self.window_size
+        )
+        
+        out = attn_out
+        out = self.act(self.conv_sptial(out))*ca + out
+        out = self.project_out(out)
+
+        out = self.ln(out + x)
+
+        # if self.training:
+        #     return out, torch.mean(mask,dim=1)
+        return out
 #endregion
